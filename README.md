@@ -1,64 +1,161 @@
-# Notion to Jira Automation
+# 🔄 ZJira - Notion to Jira Automation
 
-Simple service that automatically syncs Notion database entries to Jira when their status changes to "Ready For Dev".
+Automated integration between Notion and Jira with smart status change handling and user tagging.
 
-## Quick Start
+## ✨ Features
 
-1. **Install dependencies:**
-   ```bash
-   npm install
-   ```
+- **🔄 Automatic Status Sync**: Notion page status changes sync to Jira issues
+- **🏷️ Smart Tagging**: Automatically tags users when status changes to "Ready For Dev"
+- **📧 Email Notifications**: Sends notifications for status changes and comments
+- **🔍 Comment Monitoring**: Monitors Jira comments and notifies relevant users
+- **🔄 Secret Rotation**: Automated token rotation with GitHub Actions and cron jobs
 
-2. **Configure environment:**
-   ```bash
-   cp env.example .env
-   # Edit .env with your credentials
-   ```
+## 🚀 Quick Start
 
-3. **Start the service:**
-   ```bash
-   npm run dev
-   ```
+### 1. Setup Environment
+```bash
+# Copy environment template
+cp env.example .env
 
-## Configuration
+# Edit .env with your credentials
+nano .env
+```
 
-Edit `.env` file with your credentials:
+### 2. Install Dependencies
+```bash
+npm install
+```
 
-```env
-# Notion Configuration
-NOTION_API_KEY=your_notion_integration_token
-NOTION_DATABASE_ID=your_notion_database_id
-NOTION_WEBHOOK_SECRET=your_webhook_secret
+### 3. Build and Run
+```bash
+npm run build
+npm start
+```
 
+### 4. Test Credentials
+```bash
+node test-credentials.js
+```
+
+## 🔧 Configuration
+
+### Required Environment Variables
+```bash
 # Jira Configuration
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@domain.com
-JIRA_API_TOKEN=your_jira_api_token
-JIRA_PROJECT_KEY=YOUR_PROJECT_KEY
+JIRA_API_TOKEN=your-jira-api-token
+JIRA_PROJECT_KEY=PROJECT_KEY
 
-# Server Configuration
-PORT=3003
-NODE_ENV=development
+# Notion Configuration
+NOTION_API_KEY=your-notion-api-key
+NOTION_DATABASE_ID=your-database-id
 
-# Security
-WEBHOOK_AUTH_USERS=your-username
+# Email Configuration
+EMAIL_SERVICE=your-email-service
+EMAIL_USER=your-email@domain.com
+EMAIL_PASS=your-email-password
 ```
 
-## API Endpoints
+### Optional Configuration
+```bash
+# Enable/disable features
+ENABLE_STATUS_CHANGE_COMMENTS=true
+ENABLE_EMAIL_NOTIFICATIONS=true
+ENABLE_COMMENT_MONITORING=true
 
-- `GET /` - Service information
-- `POST /webhook/notion` - Notion webhook endpoint
-- `POST /webhook/sync` - Manual sync trigger
-- `GET /webhook/test` - Test connections
-- `GET /webhook/health` - Health check
+# Default users
+SCRUM_MASTER_EMAIL=scrum-master@domain.com
+DEFAULT_READY_FOR_DEV_USER=user@domain.com
+```
 
-## How It Works
+## 🔄 Secret Rotation
 
-1. Notion sends webhook when page status changes to "Ready For Dev"
-2. Service verifies webhook and creates appropriate Jira issue
-3. Links Stories to parent Epics if specified
-4. Adds Jira URL back to Notion page
+### GitHub Actions (Recommended)
+- Workflows run monthly automatically
+- Can be triggered manually
+- See: `.github/workflows/`
 
-## License
+### Local Cron Job
+```bash
+# Setup local rotation
+./setup-cron-rotation.sh
 
-MIT
+# Manual rotation
+node rotate-tokens.js
+```
+
+### Manual Rotation
+1. Generate new tokens from Notion and Jira
+2. Update `.env` file
+3. Test with `node test-credentials.js`
+4. Update GitHub secrets if using GitHub Actions
+
+## 📚 Documentation
+
+- **Setup Guide**: `QUICK_START_GUIDE.md`
+- **Webhook Setup**: `NOTION_WEBHOOK_SETUP.md`
+- **Tagging Guide**: `READY_FOR_DEV_TAGGING_GUIDE.md`
+- **Secret Rotation**: `SECRET_ROTATION_GUIDE.md`
+- **Database Setup**: `DUAL_DATABASE_SETUP.md`
+- **Webhook Verification**: `WEBHOOK_VERIFICATION_GUIDE.md`
+
+## 🛠️ Development
+
+### Project Structure
+```
+src/
+├── config/          # Configuration files
+├── routes/          # API routes
+├── services/        # Core services
+│   ├── automationService.ts
+│   ├── jiraService.ts
+│   ├── notionService.ts
+│   ├── emailService.ts
+│   └── commentMonitorService.ts
+└── types/           # TypeScript type definitions
+```
+
+### Available Scripts
+```bash
+npm run build        # Build TypeScript
+npm start           # Start the application
+npm run dev         # Start in development mode
+```
+
+### Testing
+```bash
+node test-credentials.js  # Test API credentials
+```
+
+## 🔍 Monitoring
+
+### Health Checks
+```bash
+curl http://localhost:3003/webhook/health
+```
+
+### Logs
+- Application logs: `logs/combined.log`
+- Error logs: `logs/error.log`
+- Rotation logs: `logs/token-rotation.log`
+
+## 🚨 Troubleshooting
+
+### Common Issues
+1. **Authentication Errors**: Check token expiration and permissions
+2. **404 Errors**: Verify database IDs and project keys
+3. **Connection Issues**: Check network and API endpoints
+
+### Debug Mode
+```bash
+DEBUG=* npm start
+```
+
+## 📝 License
+
+Private project for internal use.
+
+## 🤝 Support
+
+For issues and questions, check the troubleshooting guides or contact the development team.

@@ -68,8 +68,9 @@ export const webhookHandler = async (req: Request, res: Response) => {
     const webhookData = req.body;
     logger.info('Received Notion webhook:', webhookData);
 
-      // Process webhook events based on the new format
+      // Process webhook events - handle both old and new formats
       if (webhookData.type && webhookData.type.startsWith('page.')) {
+        // New format: { type: "page.updated", entity: { id: "page-id" } }
         const pageId = webhookData.entity?.id;
         if (pageId) {
           try {
@@ -81,8 +82,20 @@ export const webhookHandler = async (req: Request, res: Response) => {
         } else {
           logger.warn('No page ID found in webhook data');
         }
+      } else if (webhookData.object === 'page' && webhookData.entry && Array.isArray(webhookData.entry)) {
+        // Old format: { object: "page", entry: [{ id: "page-id", time: "timestamp" }] }
+        for (const entry of webhookData.entry) {
+          if (entry.id) {
+            try {
+              logger.info(`Processing page update for page: ${entry.id}`);
+              await automationService.processNotionPageUpdate(entry.id);
+            } catch (error) {
+              logger.error(`Error processing webhook for page ${entry.id}:`, error);
+            }
+          }
+        }
       } else {
-        logger.info(`Ignoring webhook event type: ${webhookData.type}`);
+        logger.info(`Ignoring webhook event type: ${webhookData.type || 'unknown'}`);
       }
 
     res.status(200).json({ success: true });

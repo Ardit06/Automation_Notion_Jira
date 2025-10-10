@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import webhookRoutes, { webhookHandler } from './routes/webhook';
+import { AutomationService } from './services/automationService';
 import { logger } from './services/loggerService';
 import { config } from './config';
 
@@ -60,11 +61,15 @@ app.use((error: any, req: express.Request, res: express.Response, next: express.
 
 // Start server
 const PORT = config.server.port;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   logger.info(`Server running on port ${PORT}`);
   logger.info(`Environment: ${config.server.nodeEnv}`);
-  logger.info(`Notion Database ID: ${config.notion.databaseId}`);
+  logger.info(`Notion User Stories Database ID: ${config.notion.userStoriesDatabaseId}`);
+  logger.info(`Notion Epics Database ID: ${config.notion.epicsDatabaseId}`);
   logger.info(`Jira Project Key: ${config.jira.projectKey}`);
+  
+  // Comment monitoring disabled - tickets will get a creation comment when created from Notion
+  logger.info('📝 Comment monitoring disabled - tickets will get creation comments instead');
 });
 
 export default app;

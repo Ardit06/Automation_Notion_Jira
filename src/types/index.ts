@@ -82,10 +82,13 @@ export interface NotionToJiraMapping {
   required: boolean;
 }
 
+export type NotionDatabaseType = 'userStories' | 'epics';
+
 export interface Config {
   notion: {
     apiKey: string;
-    databaseId: string;
+    userStoriesDatabaseId: string;
+    epicsDatabaseId: string;
     webhookSecret: string;
   };
   jira: {
@@ -100,5 +103,9 @@ export interface Config {
   };
   security: {
     authorizedUsers: string[];
+  };
+  notifications: {
+    scrumMasterEmail: string;
+    enableStatusChangeComments: boolean;
   };
 }

@@ -1,5 +1,6 @@
 import { NotionService } from './notionService';
 import { JiraService } from './jiraService';
+import { EmailService } from './emailService';
 import { NotionPage } from '../types';
 import { logger } from './loggerService';
 import { config } from '../config';
@@ -7,11 +8,13 @@ import { config } from '../config';
 export class AutomationService {
   private notionService: NotionService;
   private jiraService: JiraService;
+  private emailService: EmailService;
   private pageStateCache: Map<string, any> = new Map(); // Cache for tracking page states
 
   constructor() {
     this.notionService = new NotionService();
     this.jiraService = new JiraService();
+    this.emailService = new EmailService();
   }
 
   async processNotionPageUpdate(pageId: string, userId?: string): Promise<void> {
@@ -24,6 +27,10 @@ export class AutomationService {
         logger.warn(`Unauthorized user ${userId} attempted to trigger automation`);
         return;
       }
+
+      // Determine which database this page belongs to
+      const databaseType = await this.notionService.determineDatabaseFromPage(pageId);
+      logger.info(`📊 Page ${pageId} belongs to ${databaseType} database`);
 
       // Get the page from Notion
       logger.info(`📄 Fetching page from Notion API...`);
@@ -59,46 +66,47 @@ export class AutomationService {
         logger.info(`   🔗 Jira URL: ${existingLink.jiraUrl}`);
         logger.info(`   📄 Notion Page: ${pageId}`);
         
-        // Check if this is a "Ready for Dev" status change
-        if (pageData.status === 'READY FOR DEV') {
-          logger.info(`🚀 READY FOR DEV STATUS DETECTED - Updating existing Jira issue`);
-          await this.updateExistingJiraIssue(existingLink.jiraKey!, pageData, pageId);
+        // Handle status changes for existing issues
+        const statusChangeResult = await this.handleStatusChange(pageId);
+        if (statusChangeResult.handled) {
+          logger.info(`✅ Status change handled for page ${pageId}: ${statusChangeResult.oldStatus} → ${statusChangeResult.newStatus}`);
         } else {
-          logger.info(`💡 This page is already linked to a Jira issue - skipping creation`);
+          logger.info(`💡 This page is already linked to a Jira issue - no status change detected`);
         }
         return;
       }
 
-      // Create Jira ticket for any page (removed status check)
+      // Determine if this should be an Epic or Story based on database type and page content
+      const isEpic = databaseType === 'epics' || 
+                    pageData.isEpic === true || 
+                    (pageData.title && pageData.title.toLowerCase().includes('epic'));
+
+      // Check for duplicates by title to prevent creating multiple tickets
+      const duplicateIssue = await this.jiraService.findDuplicateIssue(pageData.title, isEpic ? 'Epic' : 'Story');
+      if (duplicateIssue) {
+        logger.warn(`⚠️ DUPLICATE ISSUE DETECTED:`);
+        logger.warn(`   📋 Existing Jira Key: ${duplicateIssue.key}`);
+        logger.warn(`   📝 Title: "${duplicateIssue.fields.summary}"`);
+        logger.warn(`   📄 Notion Page: ${pageId}`);
+        logger.warn(`   🚫 Skipping creation to prevent duplication`);
+        
+        // Link the existing Jira issue to this Notion page
+        await this.notionService.addJiraLink(pageId, duplicateIssue.key, this.jiraService.buildJiraUrl(duplicateIssue.key));
+        logger.info(`✅ Linked existing Jira issue ${duplicateIssue.key} to Notion page ${pageId}`);
+        return;
+      }
+
+      // Only create Jira ticket when status is "Ready For Dev"
+      if (pageData.status !== 'Ready For Dev') {
+        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status}', waiting for 'Ready For Dev'`);
+        return;
+      }
+      
       logger.info(`Creating Jira ticket for page ${pageId} with status: '${pageData.status}'`);
 
-      // Determine if this should be an Epic or Story based on priority
-      const isEpic = pageData.priority?.toLowerCase() === 'high';
-      const issueType = isEpic ? 'Epic' : 'Story';
-
-      // Check for duplicates in Jira by title
-      logger.info(`🔍 Checking for duplicate Jira issues with title: "${pageData.title}"`);
-      const duplicateIssue = await this.jiraService.findDuplicateIssue(
-        pageData.title,
-        issueType
-      );
-
-      if (duplicateIssue) {
-        logger.info(`✅ DUPLICATE FOUND: Jira issue ${duplicateIssue.key} already exists with the same title`);
-        logger.info(`   📋 Existing Issue: ${duplicateIssue.key} - "${duplicateIssue.fields.summary}"`);
-        logger.info(`   🔗 Status: ${duplicateIssue.fields.status?.name || 'Unknown'}`);
-        logger.info(`   📅 Created: ${duplicateIssue.fields.created || 'Unknown'}`);
-        logger.info(`   🔄 Linking Notion page to existing Jira issue...`);
-        
-        try {
-          await this.notionService.addJiraLink(pageId, duplicateIssue.key, this.jiraService.buildJiraUrl(duplicateIssue.key));
-          logger.info(`✅ SUCCESS: Notion page linked to existing Jira issue ${duplicateIssue.key}`);
-          logger.info(`   🔗 Jira URL: ${this.jiraService.buildJiraUrl(duplicateIssue.key)}`);
-        } catch (error) {
-          logger.error(`❌ ERROR: Failed to link Notion page to existing Jira issue:`, error);
-        }
-        return;
-      }
+      const issueType = pageData.issueType || (isEpic ? 'Epic' : 'Story');
+      
+      logger.info(`🏷️ Issue type determined: ${issueType} (Database: ${databaseType}, Epic fields: ${isEpic})`);
 
       logger.info(`✅ NO DUPLICATES FOUND: Creating new Jira issue with title "${pageData.title}"`);
 
@@ -111,17 +119,27 @@ export class AutomationService {
       
       logger.info(`🎯 CREATING NEW JIRA ISSUE:`);
       logger.info(`   📄 Notion Page ID: ${pageId}`);
+      logger.info(`   📊 Database Type: ${databaseType}`);
       logger.info(`   📝 Title: "${pageData.title}"`);
-      logger.info(`   🏷️ Issue Type: ${issueType} ${isEpic ? '(High Priority Epic)' : '(Story)'}`);
+      logger.info(`   🏷️ Issue Type: ${issueType} ${isEpic ? '(Epic - from ' + databaseType + ' database)' : '(Story - from ' + databaseType + ' database)'}`);
       logger.info(`   📊 Status: ${pageData.status}`);
       logger.info(`   ⚡ Priority: ${pageData.priority}`);
       logger.info(`   📅 Due Date: ${pageData.dueDate || 'Not set'}`);
       logger.info(`   🔗 Notion URL: ${notionUrl}`);
       logger.info(`   📋 Description: "${pageData.description?.substring(0, 100)}${(pageData.description?.length || 0) > 100 ? '...' : ''}"`);
+      if (pageData.parentEpic) {
+        logger.info(`   🔗 Parent Epic: ${pageData.parentEpic}`);
+      }
+      if (isEpic && (pageData.devStartDate || pageData.devEndDate || pageData.owner)) {
+        logger.info(`   🏗️ Epic-worthy page detected: Dev Start=${pageData.devStartDate}, Dev End=${pageData.devEndDate}, Owner=${pageData.owner}`);
+      }
+      if (!isEpic && (pageData.initiativeStatus || pageData.initiatives || pageData.reqStartDate)) {
+        logger.info(`   📝 User Story page detected: Initiative Status=${pageData.initiativeStatus}, Initiatives=${pageData.initiatives}, Req Start=${pageData.reqStartDate}`);
+      }
 
       if (isEpic) {
-        // Create Epic for high priority items
-        logger.info(`🏗️ Creating Epic for: "${pageData.title}" (Priority: ${pageData.priority})`);
+        // Create Epic based on database type and Epic field from Notion
+        logger.info(`🏗️ Creating Epic for: "${pageData.title}" (Database: ${databaseType}, Epic field: Yes)`);
         logger.info(`📅 Epic dates: Start=${pageData.startDate}, End=${pageData.endDate}`);
         logger.info(`📝 Epic description: "${pageData.description?.substring(0, 200)}..."`);
         
@@ -132,16 +150,32 @@ export class AutomationService {
           pageData.priority,
           notionUrl,
           pageData.startDate,
-          pageData.endDate
+          pageData.endDate,
+          pageData.requirementsEngineer
         );
         
         logger.info(`✅ Epic created successfully: ${jiraIssue.key}`);
+        
+        // Update the Jira Epic Link field in Notion (Epics database)
+        const jiraUrl = this.jiraService.buildJiraUrl(jiraIssue.key);
+        await this.notionService.updateJiraEpicLink(pageId, jiraIssue.key, jiraUrl);
+        
+        // Add Notion creation comment
+        await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
+        
+        // Comment monitoring disabled - using automatic review workflow
       } else {
-        // Create Story - try to find a related Epic
+        // Create Story - check for parent Epic from Notion field
         let epicKey: string | null = null;
         
-        // Try to find a related epic by title similarity
-        epicKey = await this.findRelatedEpic(pageData.title);
+        // First, try to use the Parent Epic field from Notion
+        if (pageData.parentEpic) {
+          logger.info(`🔗 Using Parent Epic from Notion field: ${pageData.parentEpic}`);
+          epicKey = pageData.parentEpic;
+        } else {
+          // Fallback: Try to find a related epic by title similarity
+          epicKey = await this.findRelatedEpic(pageData.title);
+        }
         
         if (epicKey) {
           logger.info(`🔗 Creating Story linked to Epic ${epicKey}: "${pageData.title}"`);
@@ -163,10 +197,22 @@ export class AutomationService {
           notionUrl,
           pageData.redDate,
           pageData.greenDate,
-          pageData.blueDate
+          pageData.blueDate,
+          pageData.requirementsEngineer
         );
         
         logger.info(`✅ Story created successfully: ${jiraIssue.key}`);
+        
+        // Update the Jira Link field in Notion (User Stories database)
+        const jiraUrl = this.jiraService.buildJiraUrl(jiraIssue.key);
+        await this.notionService.updateJiraLink(pageId, jiraIssue.key, jiraUrl);
+        
+        // Add Notion creation comment
+        await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
+        
+        // No email notification on initial creation - only on status changes
+        
+        // Comment monitoring disabled - using automatic review workflow
       }
 
       // Add Jira link back to Notion
@@ -201,48 +247,65 @@ export class AutomationService {
 
   async syncAllReadyForDevPages(): Promise<void> {
     try {
-      logger.info('Starting sync of all Ready For Dev pages');
+      logger.info('Starting sync of all pages in both databases');
 
-      // Query Notion database for pages with "Ready For Dev" status
-      const pages = await this.notionService.queryDatabase(
-        config.notion.databaseId,
-        {
-          property: 'Status',
-          select: {
-            equals: 'Ready For Dev',
-          },
-        }
-      );
+      // Query all pages in both Notion databases
+      const [userStoriesPages, epicsPages] = await Promise.all([
+        this.notionService.queryUserStoriesDatabase(),
+        this.notionService.queryEpicsDatabase()
+      ]);
 
-      logger.info(`Found ${pages.length} pages with Ready For Dev status`);
+      const totalPages = userStoriesPages.length + epicsPages.length;
+      logger.info(`Found ${userStoriesPages.length} pages in User Stories database`);
+      logger.info(`Found ${epicsPages.length} pages in Epics database`);
+      logger.info(`Total pages to process: ${totalPages}`);
 
-      for (const page of pages) {
+      let processedCount = 0;
+      
+      // Process User Stories pages
+      for (const page of userStoriesPages) {
         try {
           await this.processNotionPageUpdate(page.id);
+          processedCount++;
         } catch (error) {
-          logger.error(`Error processing page ${page.id}:`, error);
+          logger.error(`Error processing User Story page ${page.id}:`, error);
           // Continue with other pages even if one fails
         }
       }
 
-      logger.info('Completed sync of all Ready For Dev pages');
+      // Process Epics pages
+      for (const page of epicsPages) {
+        try {
+          await this.processNotionPageUpdate(page.id);
+          processedCount++;
+        } catch (error) {
+          logger.error(`Error processing Epic page ${page.id}:`, error);
+          // Continue with other pages even if one fails
+        }
+      }
+
+      logger.info(`Completed sync of ${processedCount} pages from both databases`);
     } catch (error) {
       logger.error('Error during bulk sync:', error);
       throw error;
     }
   }
 
-  async testConnections(): Promise<{ notion: boolean; jira: boolean }> {
+  async testConnections(): Promise<{ notion: boolean; jira: boolean; email: boolean }> {
     const results = {
       notion: false,
       jira: false,
+      email: false,
     };
 
     try {
-      // Test Notion connection
-      await this.notionService.getDatabase(config.notion.databaseId);
+      // Test Notion connections for both databases
+      await Promise.all([
+        this.notionService.getUserStoriesDatabase(),
+        this.notionService.getEpicsDatabase()
+      ]);
       results.notion = true;
-      logger.info('Notion connection test: SUCCESS');
+      logger.info('Notion connection test: SUCCESS (both databases)');
     } catch (error) {
       logger.error('Notion connection test: FAILED', error);
     }
@@ -259,7 +322,170 @@ export class AutomationService {
       logger.error('Jira connection test: FAILED', error);
     }
 
+    try {
+      // Test Email connection
+      results.email = await this.emailService.testEmailConnection();
+      if (results.email) {
+        logger.info('Email connection test: SUCCESS');
+      } else {
+        logger.error('Email connection test: FAILED');
+      }
+    } catch (error) {
+      logger.error('Email connection test: FAILED', error);
+    }
+
     return results;
+  }
+
+
+  async handleStatusChange(pageId: string): Promise<{ handled: boolean; oldStatus?: string; newStatus?: string }> {
+    try {
+      // Get current page data
+      const page = await this.notionService.getPage(pageId);
+      const currentPageData = await this.notionService.extractPageData(page);
+      
+      // Get cached page data to compare
+      const cachedData = this.pageStateCache.get(pageId);
+      
+      if (!cachedData) {
+        // First time processing this page, cache the data
+        this.pageStateCache.set(pageId, {
+          status: currentPageData.status,
+          lastUpdated: new Date().toISOString()
+        });
+        return { handled: false };
+      }
+
+      const oldStatus = cachedData.status;
+      const newStatus = currentPageData.status;
+
+      // Check if status actually changed
+      if (oldStatus === newStatus) {
+        return { handled: false };
+      }
+
+      logger.info(`📊 Status change detected for page ${pageId}: ${oldStatus} → ${newStatus}`);
+
+      // Check if there's an existing JIRA link
+      const jiraLinkResult = await this.notionService.checkJiraLinkExists(pageId);
+      
+      if (!jiraLinkResult.exists || !jiraLinkResult.jiraKey) {
+        logger.info(`⚠️ No JIRA link found for page ${pageId} - cannot add status change comment`);
+        return { handled: false };
+      }
+
+      const jiraKey = jiraLinkResult.jiraKey;
+
+      // Define status change triggers - focus on "back to Ready for Dev"
+      const statusChangeTriggers = [
+        { from: 'Review', to: 'Ready For Dev' }, // Back to ready for dev
+        { from: 'In Progress', to: 'Ready For Dev' }, // Back to ready
+        { from: 'In Review', to: 'Ready For Dev' }, // Back to ready from review
+        { from: 'Done', to: 'Ready For Dev' } // Back to ready from done
+      ];
+
+      // Check if this status change should trigger a comment
+      const shouldComment = statusChangeTriggers.some(trigger => 
+        trigger.from === oldStatus && trigger.to === newStatus
+      );
+
+      if (!shouldComment) {
+        logger.info(`ℹ️ Status change ${oldStatus} → ${newStatus} does not require comment`);
+        // Update cache but don't comment
+        this.pageStateCache.set(pageId, {
+          status: newStatus,
+          lastUpdated: new Date().toISOString()
+        });
+        return { handled: false };
+      }
+
+      // Add comment to JIRA
+      const scrumMasterEmail = config.notifications.scrumMasterEmail;
+      const commentAdded = await this.jiraService.addStatusChangeComment(
+        jiraKey,
+        oldStatus!,
+        newStatus!,
+        scrumMasterEmail as string
+      );
+
+      if (commentAdded) {
+        logger.info(`✅ Status change comment added to ${jiraKey}`);
+        
+        // Send email notification about status change
+        await this.emailService.sendCommentNotification(
+          jiraKey,
+          this.jiraService.buildJiraUrl(jiraKey),
+          'System',
+          `Item moved back to Ready for Dev from ${oldStatus}. Development team can now work on this item.`,
+          currentPageData.title,
+          'aurita@91.life'
+        );
+
+        // Special handling: If status changed to "Ready For Dev", tag the appropriate person
+        if (newStatus === 'Ready For Dev') {
+          logger.info(`🚀 Status changed to "Ready For Dev" - adding tagged comment`);
+          
+          // First, check if the issue is resolved and reopen it if needed
+          const issueStatus = await this.jiraService.getIssueStatus(jiraKey);
+          if (issueStatus === 'Done' || issueStatus === 'Resolved') {
+            logger.info(`🔄 Issue ${jiraKey} is resolved, reopening for Ready For Dev status`);
+            await this.jiraService.reopenIssue(jiraKey, currentPageData.title || 'Unknown Issue');
+          }
+          
+          // Determine who to tag based on available data
+          let taggedUserEmail: string | undefined;
+          let taggedUserName: string | undefined;
+          
+          // Priority 1: Use Requirements Engineer if available
+          if (currentPageData.requirementsEngineer) {
+            taggedUserEmail = currentPageData.requirementsEngineer;
+            taggedUserName = 'Requirements Engineer';
+            logger.info(`👤 Tagging Requirements Engineer: ${currentPageData.requirementsEngineer}`);
+          } else {
+            // Priority 2: Use a default person (Aurita Bytyqi)
+            taggedUserEmail = 'aurita@91.life';
+            taggedUserName = 'Aurita Bytyqi';
+            logger.info(`👤 Tagging default person: Aurita Bytyqi (aurita@91.life)`);
+          }
+          
+          const readyForDevComment = await this.jiraService.addReadyForDevTagComment(
+            jiraKey,
+            currentPageData.title || 'Unknown Issue',
+            taggedUserEmail,
+            taggedUserName
+          );
+          
+          if (readyForDevComment) {
+            logger.info(`✅ Ready For Dev tagged comment added to ${jiraKey} for ${taggedUserName}`);
+          }
+        }
+
+        // Special handling: If status changed FROM "Ready For Dev" to something else, resolve the Jira issue
+        if (oldStatus === 'Ready For Dev' && newStatus !== 'Ready For Dev') {
+          logger.info(`🔄 Status changed FROM "Ready For Dev" to "${newStatus}" - resolving Jira issue ${jiraKey}`);
+          
+          const resolved = await this.jiraService.resolveIssue(jiraKey, newStatus || 'Unknown Status', currentPageData.title || 'Unknown Issue');
+          
+          if (resolved) {
+            logger.info(`✅ Jira issue ${jiraKey} resolved due to status change away from Ready For Dev`);
+          } else {
+            logger.warn(`⚠️ Failed to resolve Jira issue ${jiraKey}`);
+          }
+        }
+      }
+
+      // Update cache
+      this.pageStateCache.set(pageId, {
+        status: newStatus,
+        lastUpdated: new Date().toISOString()
+      });
+
+      return { handled: true, oldStatus, newStatus };
+
+    } catch (error) {
+      logger.error(`Error handling status change for page ${pageId}:`, error);
+      return { handled: false };
+    }
   }
 
   private async findRelatedEpic(storyTitle: string): Promise<string | null> {

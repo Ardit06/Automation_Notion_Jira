@@ -1,5 +1,5 @@
 import axios, { AxiosInstance } from 'axios';
-import { NotionPage, NotionDatabase, WebhookPayload } from '../types';
+import { NotionPage, NotionDatabase, WebhookPayload, NotionDatabaseType } from '../types';
 import { config } from '../config';
 import { logger } from './loggerService';
 
@@ -82,6 +82,67 @@ export class NotionService {
     }
   }
 
+  async queryUserStoriesDatabase(filter?: any): Promise<NotionPage[]> {
+    return this.queryDatabase(config.notion.userStoriesDatabaseId, filter);
+  }
+
+  async queryEpicsDatabase(filter?: any): Promise<NotionPage[]> {
+    return this.queryDatabase(config.notion.epicsDatabaseId, filter);
+  }
+
+  async getUserStoriesDatabase(): Promise<NotionDatabase> {
+    return this.getDatabase(config.notion.userStoriesDatabaseId);
+  }
+
+  async getEpicsDatabase(): Promise<NotionDatabase> {
+    return this.getDatabase(config.notion.epicsDatabaseId);
+  }
+
+  async determineDatabaseFromPage(pageId: string): Promise<NotionDatabaseType> {
+    try {
+      // First try to get the page from user stories database
+      try {
+        const userStoriesPages = await this.queryUserStoriesDatabase();
+        const foundInUserStories = userStoriesPages.some(page => page.id === pageId);
+        if (foundInUserStories) {
+          return 'userStories';
+        }
+      } catch (error) {
+        // Page not found in user stories database, continue to check epics
+      }
+
+      // Then try to get the page from epics database
+      try {
+        const epicsPages = await this.queryEpicsDatabase();
+        const foundInEpics = epicsPages.some(page => page.id === pageId);
+        if (foundInEpics) {
+          return 'epics';
+        }
+      } catch (error) {
+        // Page not found in epics database either
+      }
+
+      // If we can't determine from query, try to get the page directly and check its properties
+      const page = await this.getPage(pageId);
+      const pageData = await this.extractPageData(page);
+      
+      // Determine based on page content/fields
+      const isEpic = pageData.isEpic === true || 
+                    pageData.devStartDate || 
+                    pageData.devEndDate || 
+                    pageData.owner ||
+                    pageData.roadmap ||
+                    pageData.vertical ||
+                    pageData.issueType === 'Epic';
+      
+      return isEpic ? 'epics' : 'userStories';
+    } catch (error) {
+      logger.error('Error determining database from page:', error);
+      // Default to user stories if we can't determine
+      return 'userStories';
+    }
+  }
+
   async updatePage(pageId: string, properties: any): Promise<NotionPage> {
     try {
       logger.debug(`🔄 Updating Notion page ${pageId} with properties:`, JSON.stringify(properties, null, 2));
@@ -115,25 +176,25 @@ export class NotionService {
       let targetField = null;
       let currentContent = '';
       
-      // Check for common field names that might be rich_text
-      const possibleFields = ['Notes', 'Description', 'Comments', 'Details', 'Jira Link'];
+      // Check for common field names that might be rich_text or url
+      const possibleFields = ['Jira Epic Link', 'Jira Link', 'Notes', 'Description', 'Comments', 'Details'];
       
       for (const fieldName of possibleFields) {
-        if (properties[fieldName] && properties[fieldName].type === 'rich_text') {
+        if (properties[fieldName] && (properties[fieldName].type === 'rich_text' || properties[fieldName].type === 'url')) {
           targetField = fieldName;
           currentContent = this.extractTextValue(properties[fieldName]) || '';
-          logger.debug(`📝 Found suitable field: ${fieldName}`);
+          logger.debug(`📝 Found suitable field: ${fieldName} (type: ${properties[fieldName].type})`);
           break;
         }
       }
       
-      // If no suitable field found, try to find any rich_text field
+      // If no suitable field found, try to find any rich_text or url field
       if (!targetField) {
         for (const [fieldName, field] of Object.entries(properties)) {
-          if (field.type === 'rich_text') {
+          if (field.type === 'rich_text' || field.type === 'url') {
             targetField = fieldName;
             currentContent = this.extractTextValue(field) || '';
-            logger.debug(`📝 Using fallback field: ${fieldName}`);
+            logger.debug(`📝 Using fallback field: ${fieldName} (type: ${field.type})`);
             break;
           }
         }
@@ -144,39 +205,51 @@ export class NotionService {
         return;
       }
       
-      // Create clickable Jira link using Notion's rich text format
-      const jiraInfo = `\n\n🔗 Jira: `;
-      const newContent = currentContent + jiraInfo;
+      // Check if the target field is a URL field or rich_text field
+      const fieldType = page.properties[targetField].type;
       
-      // Build rich_text content with clickable link
-      const richTextContent = [{
-        type: 'text',
-        text: {
-          content: newContent
-        }
-      }, {
-        type: 'text',
-        text: {
-          content: jiraKey,
-          link: {
-            url: jiraUrl
+      if (fieldType === 'url') {
+        // For URL fields, just set the URL directly
+        await this.updatePage(pageId, {
+          [targetField]: {
+            url: jiraUrl,
+          },
+        });
+      } else {
+        // For rich_text fields, create clickable Jira link using Notion's rich text format
+        const jiraInfo = `\n\n🔗 Jira: `;
+        const newContent = currentContent + jiraInfo;
+        
+        // Build rich_text content with clickable link
+        const richTextContent = [{
+          type: 'text',
+          text: {
+            content: newContent
           }
-        },
-        annotations: {
-          bold: false,
-          italic: false,
-          strikethrough: false,
-          underline: false,
-          code: false,
-          color: 'default'
-        }
-      }];
-      
-      await this.updatePage(pageId, {
-        [targetField]: {
-          rich_text: richTextContent,
-        },
-      });
+        }, {
+          type: 'text',
+          text: {
+            content: jiraKey,
+            link: {
+              url: jiraUrl
+            }
+          },
+          annotations: {
+            bold: false,
+            italic: false,
+            strikethrough: false,
+            underline: false,
+            code: false,
+            color: 'default'
+          }
+        }];
+        
+        await this.updatePage(pageId, {
+          [targetField]: {
+            rich_text: richTextContent,
+          },
+        });
+      }
       
       logger.info(`✅ Added clickable Jira link to Notion page ${pageId} in field '${targetField}': ${jiraKey}`);
     } catch (error) {
@@ -185,9 +258,41 @@ export class NotionService {
     }
   }
 
+  async updateJiraLink(pageId: string, jiraKey: string, jiraUrl: string): Promise<void> {
+    // This method is for User Stories database
+    await this.addJiraLink(pageId, jiraKey, jiraUrl);
+  }
+
+  async updateJiraEpicLink(pageId: string, jiraKey: string, jiraUrl: string): Promise<void> {
+    // This method is for Epics database
+    await this.addJiraLink(pageId, jiraKey, jiraUrl);
+  }
+
   async checkJiraLinkExists(pageId: string): Promise<{ exists: boolean; jiraKey?: string; jiraUrl?: string }> {
     try {
       const page = await this.getPage(pageId);
+      
+      // First check the Jira Link URL field
+      const jiraLinkProperty = page.properties['Jira Link'];
+      if (jiraLinkProperty?.type === 'url' && jiraLinkProperty.url) {
+        const jiraUrl = jiraLinkProperty.url;
+        // Extract Jira key from URL (e.g., https://mardit15-17.atlassian.net/browse/PO-63 -> PO-63)
+        const jiraMatch = jiraUrl.match(/\/browse\/([A-Z]+-\d+)/);
+        if (jiraMatch && jiraMatch[1]) {
+          const jiraKey = jiraMatch[1];
+          
+          logger.info(`🔗 EXISTING JIRA LINK FOUND IN URL FIELD:`);
+          logger.info(`   📋 Jira Key: ${jiraKey}`);
+          logger.info(`   🔗 Jira URL: ${jiraUrl}`);
+          logger.info(`   📄 Notion Page: ${pageId}`);
+          
+          return {
+            exists: true,
+            jiraKey,
+            jiraUrl
+          };
+        }
+      }
       
       // Check both Description and Notes fields for Jira links
       const descriptionProperty = page.properties['Description'];
@@ -220,7 +325,7 @@ export class NotionService {
         const jiraKey = jiraMatch[1];
         const jiraUrl = jiraMatch[2] || `https://mardit15-17.atlassian.net/browse/${jiraKey}`;
         
-        logger.info(`🔗 EXISTING JIRA LINK FOUND:`);
+        logger.info(`🔗 EXISTING JIRA LINK FOUND IN TEXT FIELD:`);
         logger.info(`   📋 Jira Key: ${jiraKey}`);
         logger.info(`   🔗 Jira URL: ${jiraUrl}`);
         logger.info(`   📄 Notion Page: ${pageId}`);
@@ -253,6 +358,7 @@ export class NotionService {
     startDate?: string;
     endDate?: string;
     epicKey?: string;
+    requirementsEngineer?: string;
     [key: string]: any;
   }> {
     const properties = page.properties;
@@ -300,6 +406,8 @@ export class NotionService {
       redDate: this.extractDateValue(properties['Red Date']) || this.extractDateValue(properties['Red']),
       greenDate: this.extractDateValue(properties['Green Date']) || this.extractDateValue(properties['Green']),
       blueDate: this.extractDateValue(properties['Blue Date']) || this.extractDateValue(properties['Blue']),
+      // Requirements Engineer field for reporter
+      requirementsEngineer: this.extractTextValue(properties['Requirements Engineer']) || this.extractTextValue(properties['Owner']),
     };
     
     logger.debug(`📊 Final extracted data:`, JSON.stringify(extractedData, null, 2));
@@ -330,6 +438,16 @@ export class NotionService {
       const url = property.url;
       logger.debug(`Extracted URL: "${url}"`);
       return url;
+    }
+    
+    // Handle people type properties (for Requirements Engineer field)
+    if (property.type === 'people' && property.people?.[0]) {
+      const person = property.people[0];
+      if (person.person?.email) {
+        const email = person.person.email;
+        logger.debug(`Extracted people email: "${email}"`);
+        return email;
+      }
     }
     
     logger.debug(`No text content found in property:`, JSON.stringify(property, null, 2));

@@ -6,7 +6,8 @@ dotenv.config();
 export const config: Config = {
   notion: {
     apiKey: process.env.NOTION_API_KEY || '',
-    databaseId: process.env.NOTION_DATABASE_ID || '',
+    userStoriesDatabaseId: process.env.NOTION_USER_STORIES_DATABASE_ID || '',
+    epicsDatabaseId: process.env.NOTION_EPICS_DATABASE_ID || '',
     webhookSecret: process.env.NOTION_WEBHOOK_SECRET || '',
   },
   jira: {
@@ -21,6 +22,10 @@ export const config: Config = {
   },
   security: {
     authorizedUsers: (process.env.WEBHOOK_AUTH_USERS || '').split(',').map(u => u.trim()),
+  },
+  notifications: {
+    scrumMasterEmail: process.env.SCRUM_MASTER_EMAIL ?? 'mardit15@gmail.com',
+    enableStatusChangeComments: process.env.ENABLE_STATUS_CHANGE_COMMENTS === 'true',
   },
 };
 
