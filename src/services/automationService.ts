@@ -1,6 +1,5 @@
 import { NotionService } from './notionService';
 import { JiraService } from './jiraService';
-import { EmailService } from './emailService';
 import { NotionPage } from '../types';
 import { logger } from './loggerService';
 import { config } from '../config';
@@ -8,13 +7,11 @@ import { config } from '../config';
 export class AutomationService {
   private notionService: NotionService;
   private jiraService: JiraService;
-  private emailService: EmailService;
   private pageStateCache: Map<string, any> = new Map(); // Cache for tracking page states
 
   constructor() {
     this.notionService = new NotionService();
     this.jiraService = new JiraService();
-    this.emailService = new EmailService();
   }
 
   async processNotionPageUpdate(pageId: string, userId?: string): Promise<void> {
@@ -323,13 +320,8 @@ export class AutomationService {
     }
 
     try {
-      // Test Email connection
-      results.email = await this.emailService.testEmailConnection();
-      if (results.email) {
-        logger.info('Email connection test: SUCCESS');
-      } else {
-        logger.error('Email connection test: FAILED');
-      }
+      // Email service removed - no longer needed
+      results.email = true;
     } catch (error) {
       logger.error('Email connection test: FAILED', error);
     }
@@ -411,15 +403,7 @@ export class AutomationService {
       if (commentAdded) {
         logger.info(`✅ Status change comment added to ${jiraKey}`);
         
-        // Send email notification about status change
-        await this.emailService.sendCommentNotification(
-          jiraKey,
-          this.jiraService.buildJiraUrl(jiraKey),
-          'System',
-          `Item moved back to Ready for Dev from ${oldStatus}. Development team can now work on this item.`,
-          currentPageData.title,
-          'aurita@91.life'
-        );
+        // Email notifications removed - no longer needed
 
         // Special handling: If status changed to "Ready For Dev", tag the appropriate person
         if (newStatus === 'Ready For Dev') {
