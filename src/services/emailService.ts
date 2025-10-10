@@ -9,7 +9,7 @@ export class EmailService {
     this.transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
-        user: process.env.EMAIL_USER || 'mardit15@gmail.com',
+        user: process.env.EMAIL_USER || 'ardit@91.life',
         pass: process.env.EMAIL_PASSWORD || process.env.EMAIL_APP_PASSWORD // Use App Password for Gmail
       }
     });
@@ -59,7 +59,7 @@ export class EmailService {
     commentAuthor: string,
     commentText: any,
     issueTitle: string,
-    recipientEmail: string = 'mardit15@gmail.com'
+    recipientEmail: string = 'ardit@91.life'
   ): Promise<boolean> {
     try {
       const subject = `💬 New Comment on JIRA Issue: ${jiraKey}`;
@@ -111,7 +111,7 @@ This notification was sent by your Notion-JIRA Automation System
       `;
 
       const mailOptions = {
-        from: `"JIRA Notifications" <${process.env.EMAIL_USER || 'mardit15@gmail.com'}>`,
+        from: `"JIRA Notifications" <${process.env.EMAIL_USER || 'ardit@91.life'}>`,
         to: recipientEmail,
         subject: subject,
         text: textContent,
@@ -134,7 +134,7 @@ This notification was sent by your Notion-JIRA Automation System
     issueTitle: string,
     issueType: string,
     notionUrl: string,
-    recipientEmail: string = 'mardit15@gmail.com'
+    recipientEmail: string = 'ardit@91.life'
   ): Promise<boolean> {
     try {
       const subject = `🎯 New ${issueType} Created: ${jiraKey}`;
@@ -168,7 +168,7 @@ This notification was sent by your Notion-JIRA Automation System
       `;
 
       const mailOptions = {
-        from: `"JIRA Notifications" <${process.env.EMAIL_USER || 'mardit15@gmail.com'}>`,
+        from: `"JIRA Notifications" <${process.env.EMAIL_USER || 'ardit@91.life'}>`,
         to: recipientEmail,
         subject: subject,
         html: htmlContent

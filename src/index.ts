@@ -27,8 +27,9 @@ app.use('/webhook', webhookRoutes);
 // Root endpoint
 app.get('/', (req, res) => {
   res.json({
-    message: 'Notion to Jira Automation Service',
+    message: 'Notion to Jira Automation Service - 91.life',
     version: '1.0.0',
+    author: 'Ardit @ 91.life',
     endpoints: {
       webhook: '/webhook/notion',
       sync: '/webhook/sync',

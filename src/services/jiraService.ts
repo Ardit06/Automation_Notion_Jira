@@ -748,7 +748,7 @@ This ticket "${issueTitle}" has been created from Notion.
 Please review the requirements and let us know if there are any questions or clarifications needed.
 
 Best regards,
-Automation System`;
+Ardit @ 91.life`;
 
       const commentData = {
         body: {

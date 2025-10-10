@@ -1,0 +1,36 @@
+# Railway Deployment Guide
+
+## Quick Deploy to Railway (Free & Reliable)
+
+### Step 1: Create Railway Account
+1. Go to https://railway.app
+2. Sign up with GitHub
+3. It's completely free!
+
+### Step 2: Deploy
+1. Click "New Project"
+2. Select "Deploy from GitHub repo"
+3. Choose your repository
+4. Railway will automatically detect it's a Node.js app
+5. Add environment variables:
+   - NOTION_API_TOKEN
+   - NOTION_USER_STORIES_DATABASE_ID
+   - NOTION_EPICS_DATABASE_ID
+   - JIRA_BASE_URL
+   - JIRA_EMAIL
+   - JIRA_API_TOKEN
+   - JIRA_PROJECT_KEY
+
+### Step 3: Get Your URL
+Railway will give you a URL like: `https://your-app-name.railway.app`
+
+### Step 4: Configure Notion Webhook
+Use: `https://your-app-name.railway.app/webhook/notion`
+
+## Benefits:
+✅ Free tier available
+✅ Automatic HTTPS
+✅ Always online
+✅ Easy environment variables
+✅ GitHub integration
+✅ Much more reliable than tunnels
