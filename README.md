@@ -8,8 +8,6 @@ Automated integration between Notion and Jira with smart status change handling 
 - **🏷️ Smart Tagging**: Automatically tags users when status changes to "Ready For Dev"
 - **📧 Multi-User Notifications**: Tag multiple scrum masters in comments
 - **🔍 Comment Monitoring**: Monitors Jira comments and notifies relevant users
-- **🔄 Secret Rotation**: Automated token rotation with GitHub Actions
-- **👤 Single User Support**: Simplified authentication with one Jira user
 
 ## 🚀 Quick Start
 
@@ -53,25 +51,10 @@ JIRA_PROJECT_KEY=PROJECT_KEY
 PORT=3003
 NODE_ENV=development
 
-# Security (comma-separated Notion user IDs)
-AUTHORIZED_USERS=user-id-1,user-id-2
-
 # Notifications (comma-separated emails to tag)
 SCRUM_MASTER_EMAILS=person1@domain.com,person2@domain.com
 ENABLE_STATUS_CHANGE_COMMENTS=true
 ```
-
-## 📋 How It Works
-
-### Automatic Creation Rules
-- **Epics**: Created when Notion status = "Approved"
-- **Stories**: Created when Notion status = "Ready For Dev"
-
-### Status Synchronization
-- Status changes in Notion automatically update Jira
-- Comments are added to Jira when status changes to "Ready For Dev"
-- Issues are reopened/resolved based on status changes
-- Multiple scrum masters can be tagged in comments
 
 ## 🛠️ Scripts
 
