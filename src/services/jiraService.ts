@@ -7,7 +7,12 @@ export class JiraService {
   private client: AxiosInstance;
 
   constructor() {
-    this.client = axios.create({
+    // Initialize with single user configuration
+    this.client = this.createClient();
+  }
+
+  private createClient(): AxiosInstance {
+    return axios.create({
       baseURL: `${config.jira.baseUrl}/rest/api/3`,
       auth: {
         username: config.jira.email,
@@ -18,6 +23,14 @@ export class JiraService {
         'Accept': 'application/json',
       },
     });
+  }
+
+  private getCurrentUser(): { email: string; apiToken: string; name?: string } {
+    return {
+      email: config.jira.email,
+      apiToken: config.jira.apiToken,
+      name: 'Primary User'
+    };
   }
 
   async createIssue(issueData: JiraCreateIssueRequest): Promise<JiraIssue> {
@@ -160,8 +173,10 @@ export class JiraService {
     endDate?: string,
     reporter?: string
   ): Promise<JiraIssue> {
-    // Create ADF format description with Notion link
-    let fullDescription = this.createDescriptionADF(description, notionUrl);
+    // Use current user for this epic creation
+    const currentUser = this.getCurrentUser();
+    // Create ADF format description for Epics: include Notion link + full content
+    let fullDescription = this.createDescriptionADF(description, notionUrl, true);
 
     const issueData: JiraCreateIssueRequest = {
       fields: {
@@ -177,37 +192,36 @@ export class JiraService {
       },
     };
 
-    // Try to set Requirements Engineer as reporter, fallback to custom field if needed
+    // Set the current user as the reporter (the one creating the issue)
+    try {
+      issueData.fields.reporter = {
+        accountId: currentUser.email
+      };
+      logger.info(`👤 Set current user as reporter: ${currentUser.name || currentUser.email}`);
+    } catch (error) {
+      logger.warn(`⚠️ Could not set reporter field, issue will be created with default reporter`);
+    }
+
+    // Try to set Requirements Engineer as assignee or custom field
     if (reporter) {
       logger.info(`👤 Requirements Engineer extracted: ${reporter}`);
       
-      // First try the standard reporter field
       try {
-        // issueData.fields.reporter = {
-        //   accountId: reporter
-        // };
-        logger.debug(`🔧 Setting reporter with accountId: ${reporter}`);
-      } catch (error) {
-        logger.warn(`⚠️ Reporter field failed, trying custom field approach`);
+        // Try assignee field as fallback
+        issueData.fields.assignee = {
+          accountId: reporter
+        };
+        logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
+      } catch (assigneeError) {
+        logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
         
-        // Fallback: Try to set Requirements Engineer as assignee or custom field
-        try {
-          // Try assignee field as fallback
-          issueData.fields.assignee = {
-            accountId: reporter
-          };
-          logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
-        } catch (assigneeError) {
-          logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
-          
-          // Try to find and use a custom field
-          const customFieldId = await this.findCustomFieldId('Requirements Engineer');
-          if (customFieldId) {
-            (issueData.fields as any)[customFieldId] = reporter;
-            logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
-          } else {
-            logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
-          }
+        // Try to find and use a custom field
+        const customFieldId = await this.findCustomFieldId('Requirements Engineer');
+        if (customFieldId) {
+          (issueData.fields as any)[customFieldId] = reporter;
+          logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
+        } else {
+          logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
         }
       }
     }
@@ -253,8 +267,10 @@ export class JiraService {
     blueDate?: string,
     reporter?: string
   ): Promise<JiraIssue> {
-    // Create ADF format description with Notion link
-    let fullDescription = this.createDescriptionADF(description, notionUrl);
+    // Use current user for this story creation
+    const currentUser = this.getCurrentUser();
+    // Create ADF format description for Stories: link-only to keep concise
+    let fullDescription = this.createDescriptionADF(description, notionUrl, false);
 
     const issueData: JiraCreateIssueRequest = {
       fields: {
@@ -270,37 +286,36 @@ export class JiraService {
       },
     };
 
-    // Try to set Requirements Engineer as reporter, fallback to custom field if needed
+    // Set the current user as the reporter (the one creating the issue)
+    try {
+      issueData.fields.reporter = {
+        accountId: currentUser.email
+      };
+      logger.info(`👤 Set current user as reporter: ${currentUser.name || currentUser.email}`);
+    } catch (error) {
+      logger.warn(`⚠️ Could not set reporter field, issue will be created with default reporter`);
+    }
+
+    // Try to set Requirements Engineer as assignee or custom field
     if (reporter) {
       logger.info(`👤 Requirements Engineer extracted: ${reporter}`);
       
-      // First try the standard reporter field
       try {
-        // issueData.fields.reporter = {
-        //   accountId: reporter
-        // };
-        logger.debug(`🔧 Setting reporter with accountId: ${reporter}`);
-      } catch (error) {
-        logger.warn(`⚠️ Reporter field failed, trying custom field approach`);
+        // Try assignee field as fallback
+        issueData.fields.assignee = {
+          accountId: reporter
+        };
+        logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
+      } catch (assigneeError) {
+        logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
         
-        // Fallback: Try to set Requirements Engineer as assignee or custom field
-        try {
-          // Try assignee field as fallback
-          issueData.fields.assignee = {
-            accountId: reporter
-          };
-          logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
-        } catch (assigneeError) {
-          logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
-          
-          // Try to find and use a custom field
-          const customFieldId = await this.findCustomFieldId('Requirements Engineer');
-          if (customFieldId) {
-            (issueData.fields as any)[customFieldId] = reporter;
-            logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
-          } else {
-            logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
-          }
+        // Try to find and use a custom field
+        const customFieldId = await this.findCustomFieldId('Requirements Engineer');
+        if (customFieldId) {
+          (issueData.fields as any)[customFieldId] = reporter;
+          logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
+        } else {
+          logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
         }
       }
     }
@@ -544,49 +559,6 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
     }
   }
 
-  async addRequirementsEngineerComment(
-    jiraKey: string,
-    requirementsEngineerEmail: string,
-    issueTitle: string
-  ): Promise<boolean> {
-    try {
-      const commentText = `Hi @aurita@91.life,
-
-This issue "${issueTitle}" has been moved back to **Ready For Dev** status.
-
-The development team is ready to work on this item. Please review and let us know if there are any additional requirements or clarifications needed.
-
-Best regards,
-Automation System`;
-
-      const commentData = {
-        body: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: commentText,
-                  marks: []
-                }
-              ]
-            }
-          ]
-        }
-      };
-
-      await this.client.post(`/issue/${jiraKey}/comment`, commentData);
-      logger.info(`✅ Requirements Engineer comment added to ${jiraKey} for ${requirementsEngineerEmail}`);
-      return true;
-    } catch (error) {
-      logger.error(`❌ Failed to add Requirements Engineer comment to ${jiraKey}:`, error);
-      return false;
-    }
-  }
-
   async addReadyForDevTagComment(
     jiraKey: string,
     issueTitle: string,
@@ -644,14 +616,15 @@ The development team can now work on this item. Please review and let us know if
     }
   }
 
-  async addStatusChangeComment(issueKey: string, oldStatus: string, newStatus: string, scrumMasterEmail?: string): Promise<boolean> {
+  async addStatusChangeComment(issueKey: string, oldStatus: string, newStatus: string, scrumMasterEmails?: string[]): Promise<boolean> {
     try {
       let comment = `🚀 **Back to Ready for Dev**\n\n`;
       comment += `This issue has been moved back to **Ready for Dev** status from **${oldStatus}**.\n\n`;
       comment += `The development team can now work on this item. Please review and let us know if there are any additional requirements or clarifications needed.\n\n`;
       
-      if (scrumMasterEmail) {
-        comment += `[~${scrumMasterEmail}] This item is ready for development.`;
+      if (scrumMasterEmails && scrumMasterEmails.length > 0) {
+        const mentions = scrumMasterEmails.map(email => `[~${email}]`).join(' ');
+        comment += `${mentions} This item is ready for development.`;
       } else {
         comment += `@scrum-master This item is ready for development.`;
       }
@@ -714,7 +687,9 @@ The development team can now work on this item. Please review and let us know if
               content: [
                 {
                   type: 'text',
-                  text: scrumMasterEmail ? `[~${scrumMasterEmail}]` : '@scrum-master',
+                  text: scrumMasterEmails && scrumMasterEmails.length > 0 
+                    ? scrumMasterEmails.map(email => `[~${email}]`).join(' ')
+                    : '@scrum-master',
                   marks: []
                 },
                 {
@@ -878,41 +853,42 @@ Automation System`;
     };
   }
 
-  public createDescriptionADF(description?: string, notionUrl?: string): any {
+  public createDescriptionADF(description?: string, notionUrl?: string, includeDescription: boolean = false): any {
     const content: any[] = [];
     
-    // Only add Notion link, not the description content
-    // Add Notion link if provided
+    // Always add a Notion link block if provided
     if (notionUrl) {
       content.push({
         type: 'paragraph',
         content: [
-          {
-            type: 'text',
-            text: '🔗 ',
-            marks: []
-          },
+          { type: 'text', text: '🔗 ', marks: [] },
           {
             type: 'text',
             text: 'View in Notion',
-            marks: [
-              {
-                type: 'link',
-                attrs: {
-                  href: notionUrl
-                }
-              }
-            ]
+            marks: [{ type: 'link', attrs: { href: notionUrl } }]
           }
         ]
       });
     }
+
+    // Optionally include the full description content (used for Epics)
+    if (includeDescription && description && description.trim()) {
+      // Add a separator heading
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '—', marks: [] }
+        ]
+      });
+
+      // Convert plain text description into ADF paragraphs
+      const adf = this.convertToADF(description);
+      if (Array.isArray(adf?.content)) {
+        content.push(...adf.content);
+      }
+    }
     
-    return {
-      type: 'doc',
-      version: 1,
-      content: content
-    };
+    return { type: 'doc', version: 1, content };
   }
 
   public createNotionLinkADF(notionUrl: string): any {

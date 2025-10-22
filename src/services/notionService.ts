@@ -145,10 +145,13 @@ export class NotionService {
 
   async updatePage(pageId: string, properties: any): Promise<NotionPage> {
     try {
-      logger.debug(`🔄 Updating Notion page ${pageId} with properties:`, JSON.stringify(properties, null, 2));
+      // Validate payload before sending to prevent API misinterpretation
+      const validatedProperties = this.validateUpdatePayload(properties);
+      
+      logger.debug(`🔄 Updating Notion page ${pageId} with validated properties:`, JSON.stringify(validatedProperties, null, 2));
       
       const response = await this.client.patch(`/pages/${pageId}`, {
-        properties,
+        properties: validatedProperties,
       });
       
       logger.debug(`✅ Successfully updated Notion page ${pageId}`);
@@ -158,9 +161,118 @@ export class NotionService {
       if (error.response) {
         logger.error(`Response status: ${error.response.status}`);
         logger.error(`Response data:`, JSON.stringify(error.response.data, null, 2));
+        
+        // Check for specific API misinterpretation errors
+        if (this.isPayloadMisinterpretationError(error)) {
+          logger.error(`🚨 CRITICAL: Notion API may have misinterpreted our payload!`);
+          logger.error(`   This could cause property reordering or data corruption.`);
+          logger.error(`   Please check the Notion page manually for unexpected changes.`);
+        }
       }
       throw error;
     }
+  }
+
+  /**
+   * Validates update payload to prevent Notion API misinterpretation
+   * that could cause property reordering or data corruption
+   */
+  private validateUpdatePayload(properties: any): any {
+    const validated: any = {};
+    
+    for (const [fieldName, fieldValue] of Object.entries(properties)) {
+      // Only include fields that we explicitly want to update
+      if (this.isValidFieldUpdate(fieldName, fieldValue)) {
+        validated[fieldName] = fieldValue;
+      } else {
+        logger.warn(`⚠️ Skipping invalid field update: ${fieldName}`);
+      }
+    }
+    
+    return validated;
+  }
+
+  /**
+   * Checks if a field update is safe and won't cause API misinterpretation
+   */
+  private isValidFieldUpdate(fieldName: string, fieldValue: any): boolean {
+    // Reject any updates that could affect property ordering
+    if (fieldName.includes('order') || fieldName.includes('position') || fieldName.includes('sort')) {
+      logger.warn(`🚫 Rejecting field update that could affect ordering: ${fieldName}`);
+      return false;
+    }
+
+    // Reject updates to system fields that could cause issues
+    const systemFields = ['id', 'created_time', 'last_edited_time', 'parent', 'archived'];
+    if (systemFields.includes(fieldName)) {
+      logger.warn(`🚫 Rejecting update to system field: ${fieldName}`);
+      return false;
+    }
+
+    // Validate field value structure
+    if (fieldValue && typeof fieldValue === 'object') {
+      // Ensure rich_text fields have proper structure
+      if (fieldValue.rich_text && Array.isArray(fieldValue.rich_text)) {
+        return this.validateRichTextStructure(fieldValue.rich_text);
+      }
+      
+      // Ensure url fields have proper structure
+      if (fieldValue.url && typeof fieldValue.url === 'string') {
+        return true;
+      }
+      
+      // Ensure select fields have proper structure
+      if (fieldValue.select && typeof fieldValue.select === 'object') {
+        return fieldValue.select.name && typeof fieldValue.select.name === 'string';
+      }
+      
+      // Ensure status fields have proper structure
+      if (fieldValue.status && typeof fieldValue.status === 'object') {
+        return fieldValue.status.name && typeof fieldValue.status.name === 'string';
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Validates rich_text structure to prevent API issues
+   */
+  private validateRichTextStructure(richText: any[]): boolean {
+    if (!Array.isArray(richText)) return false;
+    
+    for (const textBlock of richText) {
+      if (!textBlock.type || !textBlock.text) return false;
+      if (textBlock.type !== 'text') return false;
+      if (!textBlock.text.content || typeof textBlock.text.content !== 'string') return false;
+    }
+    
+    return true;
+  }
+
+  /**
+   * Detects if an error indicates payload misinterpretation by Notion API
+   */
+  private isPayloadMisinterpretationError(error: any): boolean {
+    if (!error.response || !error.response.data) return false;
+    
+    const errorData = error.response.data;
+    const errorMessage = JSON.stringify(errorData).toLowerCase();
+    
+    // Look for signs of API misinterpretation
+    const misinterpretationIndicators = [
+      'invalid property',
+      'property not found',
+      'unexpected field',
+      'malformed request',
+      'field type mismatch',
+      'cannot update',
+      'read-only property'
+    ];
+    
+    return misinterpretationIndicators.some(indicator => 
+      errorMessage.includes(indicator)
+    );
   }
 
   async addJiraLink(pageId: string, jiraKey: string, jiraUrl: string): Promise<void> {
@@ -202,6 +314,12 @@ export class NotionService {
       
       if (!targetField) {
         logger.warn(`⚠️ No suitable rich_text field found in page ${pageId} to add Jira link`);
+        return;
+      }
+      
+      // Validate that the target field exists and is accessible
+      if (!this.validateFieldExists(pageId, targetField, properties[targetField])) {
+        logger.error(`❌ Target field ${targetField} validation failed - skipping Jira link update`);
         return;
       }
       
@@ -258,6 +376,30 @@ export class NotionService {
     }
   }
 
+  /**
+   * Validates that a field exists and is safe to update
+   */
+  private validateFieldExists(pageId: string, fieldName: string, field: any): boolean {
+    if (!field) {
+      logger.error(`❌ Field ${fieldName} does not exist on page ${pageId}`);
+      return false;
+    }
+
+    if (!field.type) {
+      logger.error(`❌ Field ${fieldName} has no type information`);
+      return false;
+    }
+
+    // Check if field is in a writable state
+    const writableTypes = ['rich_text', 'url', 'select', 'status', 'date', 'number', 'checkbox'];
+    if (!writableTypes.includes(field.type)) {
+      logger.error(`❌ Field ${fieldName} type ${field.type} is not writable`);
+      return false;
+    }
+
+    return true;
+  }
+
   async updateJiraLink(pageId: string, jiraKey: string, jiraUrl: string): Promise<void> {
     // This method is for User Stories database
     await this.addJiraLink(pageId, jiraKey, jiraUrl);
@@ -276,7 +418,7 @@ export class NotionService {
       const jiraLinkProperty = page.properties['Jira Link'];
       if (jiraLinkProperty?.type === 'url' && jiraLinkProperty.url) {
         const jiraUrl = jiraLinkProperty.url;
-        // Extract Jira key from URL (e.g., https://mardit15-17.atlassian.net/browse/PO-63 -> PO-63)
+        // Extract Jira key from URL 
         const jiraMatch = jiraUrl.match(/\/browse\/([A-Z]+-\d+)/);
         if (jiraMatch && jiraMatch[1]) {
           const jiraKey = jiraMatch[1];
@@ -318,12 +460,12 @@ export class NotionService {
       const combinedText = description + ' ' + notes;
       
       // Check if any field contains Jira link pattern (both old format and new clickable format)
-      // Look for complete Jira links with actual keys (e.g., "🔗 Jira: OR-123" or "🔗 Jira: OR-123 - https://...")
+      // Look for complete Jira links with actual keys 
       const jiraMatch = combinedText.match(/🔗 Jira: ([A-Z]+-\d+)(?:\s*-?\s*(https?:\/\/[^\s]+))?/);
       
       if (jiraMatch && jiraMatch[1] && jiraMatch[1].length > 3) {
         const jiraKey = jiraMatch[1];
-        const jiraUrl = jiraMatch[2] || `https://mardit15-17.atlassian.net/browse/${jiraKey}`;
+        const jiraUrl = jiraMatch[2] || `${config.jira.baseUrl}/browse/${jiraKey}`;
         
         logger.info(`🔗 EXISTING JIRA LINK FOUND IN TEXT FIELD:`);
         logger.info(`   📋 Jira Key: ${jiraKey}`);
@@ -389,6 +531,13 @@ export class NotionService {
     
     logger.debug(`📝 Final extracted title: "${title}"`);
     
+    // Extract epic key from relation field
+    let epicKey = this.extractTextValue(properties['Epic Key']);
+    if (!epicKey) {
+      // Try to get epic key from the Initiatives relation
+      epicKey = await this.extractEpicKeyFromRelation(properties['🚀 Initiatives']);
+    }
+
     const extractedData = {
       title: title,
       description: description,
@@ -396,12 +545,12 @@ export class NotionService {
       issueType: 'Story', // Default to Story since no Issue Type property
       storyPoints: this.extractNumberValue(properties['Story Points']),
       labels: [], // No Labels property
-      epicLink: this.extractTextValue(properties['Epic Key']),
+      epicLink: epicKey,
       priority: this.extractSelectValue(properties['Priority']),
       dueDate: this.extractDateValue(properties['Due Date']),
       startDate: this.extractDateValue(properties['Start Date']),
       endDate: this.extractDateValue(properties['End Date']),
-      epicKey: this.extractTextValue(properties['Epic Key']),
+      epicKey: epicKey,
       // RGB dates for user stories and epics
       redDate: this.extractDateValue(properties['Red Date']) || this.extractDateValue(properties['Red']),
       greenDate: this.extractDateValue(properties['Green Date']) || this.extractDateValue(properties['Green']),
@@ -496,6 +645,38 @@ export class NotionService {
       logger.error(`Error validating field ${fieldName}:`, error);
       return false;
     }
+  }
+
+  async extractEpicKeyFromRelation(relationProperty: any): Promise<string | undefined> {
+    if (!relationProperty || relationProperty.type !== 'relation' || !relationProperty.relation) {
+      return undefined;
+    }
+
+    const relations = relationProperty.relation;
+    if (relations.length === 0) {
+      return undefined;
+    }
+
+    try {
+      // Get the first related page (epic)
+      const relatedPageId = relations[0].id;
+      const relatedPage = await this.getPage(relatedPageId);
+      
+      // Extract the Jira Epic Link from the related epic page
+      const jiraLinkProperty = relatedPage.properties['Jira Epic Link'];
+      if (jiraLinkProperty && jiraLinkProperty.type === 'url' && jiraLinkProperty.url) {
+        // Extract the Jira key from the URL 
+        const urlMatch = jiraLinkProperty.url.match(/\/browse\/([A-Z]+-\d+)/);
+        if (urlMatch) {
+          logger.debug(`🔗 Extracted epic key from relation: ${urlMatch[1]}`);
+          return urlMatch[1];
+        }
+      }
+    } catch (error) {
+      logger.error('Error extracting epic key from relation:', error);
+    }
+
+    return undefined;
   }
 
   verifyWebhookSignature(payload: string, signature: string): boolean {

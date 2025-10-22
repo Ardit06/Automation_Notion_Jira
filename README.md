@@ -6,16 +6,17 @@ Automated integration between Notion and Jira with smart status change handling 
 
 - **🔄 Automatic Status Sync**: Notion page status changes sync to Jira issues
 - **🏷️ Smart Tagging**: Automatically tags users when status changes to "Ready For Dev"
-- **📧 Email Notifications**: Sends notifications for status changes and comments
+- **📧 Multi-User Notifications**: Tag multiple scrum masters in comments
 - **🔍 Comment Monitoring**: Monitors Jira comments and notifies relevant users
-- **🔄 Secret Rotation**: Automated token rotation with GitHub Actions and cron jobs
+- **🔄 Secret Rotation**: Automated token rotation with GitHub Actions
+- **👤 Single User Support**: Simplified authentication with one Jira user
 
 ## 🚀 Quick Start
 
 ### 1. Setup Environment
 ```bash
 # Copy environment template
-cp env.example .env
+cp config/environment.example .env
 
 # Edit .env with your credentials
 nano .env
@@ -32,130 +33,108 @@ npm run build
 npm start
 ```
 
-### 4. Test Credentials
-```bash
-node test-credentials.js
-```
-
 ## 🔧 Configuration
 
 ### Required Environment Variables
-```bash
-# Jira Configuration
+```env
+# Notion Configuration
+NOTION_API_KEY=your_notion_api_key
+NOTION_USER_STORIES_DATABASE_ID=your_user_stories_db_id
+NOTION_EPICS_DATABASE_ID=your_epics_db_id
+NOTION_WEBHOOK_SECRET=your_webhook_secret
+
+# Jira Configuration (Single User)
 JIRA_BASE_URL=https://your-domain.atlassian.net
 JIRA_EMAIL=your-email@domain.com
 JIRA_API_TOKEN=your-jira-api-token
 JIRA_PROJECT_KEY=PROJECT_KEY
 
-# Notion Configuration
-NOTION_API_KEY=your-notion-api-key
-NOTION_DATABASE_ID=your-database-id
+# Server Configuration
+PORT=3003
+NODE_ENV=development
 
-# Email Configuration
-EMAIL_SERVICE=your-email-service
-EMAIL_USER=your-email@domain.com
-EMAIL_PASS=your-email-password
-```
+# Security (comma-separated Notion user IDs)
+AUTHORIZED_USERS=user-id-1,user-id-2
 
-### Optional Configuration
-```bash
-# Enable/disable features
+# Notifications (comma-separated emails to tag)
+SCRUM_MASTER_EMAILS=person1@domain.com,person2@domain.com
 ENABLE_STATUS_CHANGE_COMMENTS=true
-ENABLE_EMAIL_NOTIFICATIONS=true
-ENABLE_COMMENT_MONITORING=true
-
-# Default users
-SCRUM_MASTER_EMAIL=scrum-master@domain.com
-DEFAULT_READY_FOR_DEV_USER=user@domain.com
 ```
 
-## 🔄 Secret Rotation
+## 📋 How It Works
 
-### GitHub Actions (Recommended)
-- Workflows run monthly automatically
-- Can be triggered manually
+### Automatic Creation Rules
+- **Epics**: Created when Notion status = "Approved"
+- **Stories**: Created when Notion status = "Ready For Dev"
+
+### Status Synchronization
+- Status changes in Notion automatically update Jira
+- Comments are added to Jira when status changes to "Ready For Dev"
+- Issues are reopened/resolved based on status changes
+- Multiple scrum masters can be tagged in comments
+
+## 🛠️ Scripts
+
+### Development
+```bash
+npm run dev          # Start development server
+npm run build        # Build TypeScript
+npm run watch        # Watch mode for development
+```
+
+## 🚀 Deployment
+
+### GitHub Actions
+- Automated testing and deployment
+- Secret rotation reminders
 - See: `.github/workflows/`
 
-### Local Cron Job
-```bash
-# Setup local rotation
-./setup-cron-rotation.sh
+### Manual Deployment
+1. Build the project: `npm run build`
+2. Set environment variables on your hosting platform
+3. Start the service: `npm start`
 
-# Manual rotation
-node rotate-tokens.js
-```
-
-### Manual Rotation
-1. Generate new tokens from Notion and Jira
-2. Update `.env` file
-3. Test with `node test-credentials.js`
-4. Update GitHub secrets if using GitHub Actions
-
-## 📚 Documentation
-
-- **Setup Guide**: `QUICK_START_GUIDE.md`
-- **Webhook Setup**: `NOTION_WEBHOOK_SETUP.md`
-- **Tagging Guide**: `READY_FOR_DEV_TAGGING_GUIDE.md`
-- **Secret Rotation**: `SECRET_ROTATION_GUIDE.md`
-- **Database Setup**: `DUAL_DATABASE_SETUP.md`
-- **Webhook Verification**: `WEBHOOK_VERIFICATION_GUIDE.md`
-
-## 🛠️ Development
-
-### Project Structure
-```
-src/
-├── config/          # Configuration files
-├── routes/          # API routes
-├── services/        # Core services
-│   ├── automationService.ts
-│   ├── jiraService.ts
-│   ├── notionService.ts
-│   ├── emailService.ts
-│   └── commentMonitorService.ts
-└── types/           # TypeScript type definitions
-```
-
-### Available Scripts
-```bash
-npm run build        # Build TypeScript
-npm start           # Start the application
-npm run dev         # Start in development mode
-```
-
-### Testing
-```bash
-node test-credentials.js  # Test API credentials
-```
-
-## 🔍 Monitoring
-
-### Health Checks
-```bash
-curl http://localhost:3003/webhook/health
-```
-
-### Logs
-- Application logs: `logs/combined.log`
-- Error logs: `logs/error.log`
-- Rotation logs: `logs/token-rotation.log`
-
-## 🚨 Troubleshooting
+## 🔧 Troubleshooting
 
 ### Common Issues
-1. **Authentication Errors**: Check token expiration and permissions
-2. **404 Errors**: Verify database IDs and project keys
-3. **Connection Issues**: Check network and API endpoints
+- **Webhook Verification Failed**: Check `NOTION_WEBHOOK_SECRET`
+- **Jira Authentication Error**: Verify `JIRA_EMAIL` and `JIRA_API_TOKEN`
+- **Database Access Denied**: Ensure Notion integration has proper permissions
 
-### Debug Mode
-```bash
-DEBUG=* npm start
-```
+### Logs
+- Check `logs/combined.log` for detailed information
+- Error logs are in `logs/error.log`
 
-## 📝 License
+## 📚 API Documentation
 
-Private project for internal use.
+### Webhook Endpoint
+- **URL**: `/webhook/notion`
+- **Method**: POST
+- **Headers**: `Notion-Signature` for verification
 
-## 🤝 Support
+### Health Check
+- **URL**: `/health`
+- **Method**: GET
+- **Response**: Service status and connection tests
 
-For issues and questions, check the troubleshooting guides or contact the development team.
+## 📘 Complete Documentation
+
+See `COMPREHENSIVE_GUIDE.md` for:
+- Detailed setup instructions
+- "What Happens When..." scenarios
+- Complete troubleshooting guide
+- API reference
+- Security best practices
+- Advanced configuration
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Test thoroughly
+5. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details

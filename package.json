@@ -1,14 +1,13 @@
 {
   "name": "notion-jira-automation",
   "version": "1.0.0",
-  "description": "Automation service to sync Notion database changes to Jira",
+  "description": "Comprehensive automation service to sync Notion database changes to Jira",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "watch": "nodemon --exec ts-node src/index.ts",
-    "heroku-postbuild": "npm run build"
+    "watch": "nodemon --exec ts-node src/index.ts"
   },
   "dependencies": {
     "axios": "^1.6.0",

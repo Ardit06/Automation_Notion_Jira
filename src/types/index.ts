@@ -105,7 +105,7 @@ export interface Config {
     authorizedUsers: string[];
   };
   notifications: {
-    scrumMasterEmail: string;
+    scrumMasterEmails: string[];
     enableStatusChangeComments: boolean;
   };
 }

@@ -3,6 +3,7 @@ import { Config } from '../types';
 
 dotenv.config();
 
+
 export const config: Config = {
   notion: {
     apiKey: process.env.NOTION_API_KEY || '',
@@ -21,10 +22,10 @@ export const config: Config = {
     nodeEnv: process.env.NODE_ENV || 'development',
   },
   security: {
-    authorizedUsers: (process.env.WEBHOOK_AUTH_USERS || '').split(',').map(u => u.trim()),
+    authorizedUsers: (process.env.AUTHORIZED_USERS || '').split(',').map(u => u.trim()),
   },
   notifications: {
-    scrumMasterEmail: process.env.SCRUM_MASTER_EMAIL ?? 'mardit15@gmail.com',
+    scrumMasterEmails: (process.env.SCRUM_MASTER_EMAILS || '').split(',').map(e => e.trim()).filter(e => e),
     enableStatusChangeComments: process.env.ENABLE_STATUS_CHANGE_COMMENTS === 'true',
   },
 };

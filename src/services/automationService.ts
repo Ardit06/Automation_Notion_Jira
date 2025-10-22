@@ -93,9 +93,12 @@ export class AutomationService {
         return;
       }
 
-      // Only create Jira ticket when status is "Ready For Dev"
-      if (pageData.status !== 'Ready For Dev') {
-        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status}', waiting for 'Ready For Dev'`);
+      // Creation gate differs for Epics vs Stories
+      // - Epics: create when status is 'Approved'
+      // - Stories: create when status is 'Ready For Dev'
+      const requiresCreationApproval = isEpic ? 'Approved' : 'Ready For Dev';
+      if (pageData.status !== requiresCreationApproval) {
+        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status}', waiting for '${requiresCreationApproval}'`);
         return;
       }
       
@@ -207,8 +210,6 @@ export class AutomationService {
         // Add Notion creation comment
         await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
         
-        // No email notification on initial creation - only on status changes
-        
         // Comment monitoring disabled - using automatic review workflow
       }
 
@@ -288,11 +289,10 @@ export class AutomationService {
     }
   }
 
-  async testConnections(): Promise<{ notion: boolean; jira: boolean; email: boolean }> {
+  async testConnections(): Promise<{ notion: boolean; jira: boolean }> {
     const results = {
       notion: false,
       jira: false,
-      email: false,
     };
 
     try {
@@ -317,13 +317,6 @@ export class AutomationService {
       }
     } catch (error) {
       logger.error('Jira connection test: FAILED', error);
-    }
-
-    try {
-      // Email service removed - no longer needed
-      results.email = true;
-    } catch (error) {
-      logger.error('Email connection test: FAILED', error);
     }
 
     return results;
@@ -392,18 +385,16 @@ export class AutomationService {
       }
 
       // Add comment to JIRA
-      const scrumMasterEmail = config.notifications.scrumMasterEmail;
+      const scrumMasterEmails = config.notifications.scrumMasterEmails;
       const commentAdded = await this.jiraService.addStatusChangeComment(
         jiraKey,
         oldStatus!,
         newStatus!,
-        scrumMasterEmail as string
+        scrumMasterEmails
       );
 
       if (commentAdded) {
         logger.info(`✅ Status change comment added to ${jiraKey}`);
-        
-        // Email notifications removed - no longer needed
 
         // Special handling: If status changed to "Ready For Dev", tag the appropriate person
         if (newStatus === 'Ready For Dev') {
@@ -503,119 +494,6 @@ export class AutomationService {
     }
   }
 
-  private async updateExistingJiraIssue(jiraKey: string, pageData: any, notionPageId: string): Promise<void> {
-    try {
-      logger.info(`🔄 UPDATING EXISTING JIRA ISSUE: ${jiraKey}`);
-      
-      // Get the current Jira issue to compare changes
-      const currentIssue = await this.jiraService.getIssue(jiraKey);
-      
-      // Get previous Notion page state to detect changes
-      const previousState = this.pageStateCache.get(notionPageId);
-      const changes = this.detectNotionChanges(previousState, pageData);
-      
-      logger.info(`🔍 CHANGE DETECTION:`);
-      if (previousState) {
-        logger.info(`   📊 Previous state found - detecting changes...`);
-        logger.info(`   📝 Changes detected: ${changes.length}`);
-        changes.forEach(change => logger.info(`   • ${change}`));
-      } else {
-        logger.info(`   📊 No previous state found - this is the first update`);
-      }
-      
-      // Prepare update data
-      const updateData: any = {
-        fields: {}
-      };
-
-      // Check if title has changed
-      if (currentIssue.fields.summary !== pageData.title) {
-        updateData.fields.summary = pageData.title;
-        logger.info(`📝 Title updated: "${currentIssue.fields.summary}" → "${pageData.title}"`);
-      }
-
-      // Check if description has changed
-      const currentDescription = (currentIssue.fields.description as any)?.content?.[0]?.content?.[0]?.text || '';
-      if (currentDescription !== pageData.description) {
-        updateData.fields.description = {
-          type: 'doc',
-          version: 1,
-          content: [{
-            type: 'paragraph',
-            content: [{
-              type: 'text',
-              text: pageData.description || ''
-            }]
-          }]
-        };
-        logger.info(`📄 Description updated`);
-      }
-
-      // Check if priority has changed
-      const currentPriority = currentIssue.fields.priority?.name;
-      const newPriority = this.mapPriorityToJira(pageData.priority);
-      if (currentPriority !== newPriority) {
-        updateData.fields.priority = { name: newPriority };
-        logger.info(`⚡ Priority updated: "${currentPriority}" → "${newPriority}"`);
-      }
-
-      // Check if due date has changed
-      if (pageData.dueDate) {
-        const currentDueDate = currentIssue.fields.duedate;
-        if (currentDueDate !== pageData.dueDate) {
-          updateData.fields.duedate = pageData.dueDate;
-          logger.info(`📅 Due date updated: "${currentDueDate}" → "${pageData.dueDate}"`);
-        }
-      }
-
-
-      // Update the issue if there are changes
-      if (Object.keys(updateData.fields).length > 0) {
-        await this.jiraService.updateIssue(jiraKey, updateData);
-        logger.info(`✅ Jira issue ${jiraKey} updated successfully`);
-        
-        // Create enhanced comment with change details
-        const comment = this.createEnhancedComment(pageData, notionPageId, changes);
-        
-        await this.jiraService.addComment(jiraKey, comment);
-        logger.info(`💬 Enhanced comment added to Jira issue ${jiraKey}`);
-        
-        // Tag team members if needed
-        await this.tagTeamMembers(jiraKey, pageData);
-        
-      } else {
-        logger.info(`ℹ️ No changes detected for Jira issue ${jiraKey}`);
-      }
-
-      // Update the page state cache with current data
-      this.pageStateCache.set(notionPageId, pageData);
-
-    } catch (error) {
-      logger.error(`❌ Error updating Jira issue ${jiraKey}:`, error);
-    }
-  }
-
-  private async tagTeamMembers(jiraKey: string, pageData: any): Promise<void> {
-    try {
-      // Add team members based on priority or other criteria
-      const teamMembers = [];
-      
-      if (pageData.priority?.toLowerCase() === 'high') {
-        teamMembers.push('@Asaini', '@Anissa');
-      }
-      
-      if (teamMembers.length > 0) {
-        const comment = `🏷️ **Team Notification**\n\n` +
-          `Hey ${teamMembers.join(', ')}! This high-priority issue has been updated and is ready for development.`;
-        
-        await this.jiraService.addComment(jiraKey, comment);
-        logger.info(`👥 Team members tagged in Jira issue ${jiraKey}: ${teamMembers.join(', ')}`);
-      }
-    } catch (error) {
-      logger.error(`❌ Error tagging team members in Jira issue ${jiraKey}:`, error);
-    }
-  }
-
   public detectNotionChanges(previousState: any, currentState: any): string[] {
     const changes: string[] = [];
     
@@ -663,36 +541,4 @@ export class AutomationService {
     return changes;
   }
 
-  public createEnhancedComment(pageData: any, notionPageId: string, changes: string[]): string {
-    const notionUrl = `https://www.notion.so/${notionPageId.replace(/-/g, '')}`;
-    
-    let comment = `🚀 **Ready for Dev - Notion Page Updated**\n\n`;
-    comment += `📄 **Notion Page:** [View in Notion](${notionUrl})\n`;
-    comment += `📊 **Current Status:** ${pageData.status}\n`;
-    comment += `⚡ **Priority:** ${pageData.priority}\n`;
-    comment += `📅 **Updated:** ${new Date().toLocaleString()}\n\n`;
-
-    if (changes.length > 0) {
-      comment += `📝 **Changes Made:**\n`;
-      changes.forEach(change => {
-        comment += `• ${change}\n`;
-      });
-      comment += `\n`;
-    }
-
-    comment += `*This issue was automatically updated from Notion when marked as "Ready for Dev".*`;
-    
-    return comment;
-  }
-
-  private mapPriorityToJira(notionPriority: string): string {
-    const priorityMap: { [key: string]: string } = {
-      'High': 'Highest',
-      'Medium': 'High', 
-      'Low': 'Medium',
-      'Critical': 'Critical'
-    };
-    
-    return priorityMap[notionPriority] || 'Medium';
-  }
 }
