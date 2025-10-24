@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  notion-jira-automation:
+    build: .
+    ports:
+      - "3003:3003"
+    environment:
+      - NODE_ENV=production
+      - PORT=3003
+      # Add your environment variables here or use .env file
+      - NOTION_API_KEY=${NOTION_API_KEY}
+      - NOTION_USER_STORIES_DATABASE_ID=${NOTION_USER_STORIES_DATABASE_ID}
+      - NOTION_EPICS_DATABASE_ID=${NOTION_EPICS_DATABASE_ID}
+      - NOTION_WEBHOOK_SECRET=${NOTION_WEBHOOK_SECRET}
+      - JIRA_BASE_URL=${JIRA_BASE_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      - SCRUM_MASTER_EMAILS=${SCRUM_MASTER_EMAILS}
+      - ENABLE_STATUS_CHANGE_COMMENTS=${ENABLE_STATUS_CHANGE_COMMENTS:-true}
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/webhook/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

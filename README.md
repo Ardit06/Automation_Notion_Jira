@@ -69,7 +69,6 @@ npm run watch        # Watch mode for development
 
 ### GitHub Actions
 - Automated testing and deployment
-- Secret rotation reminders
 - See: `.github/workflows/`
 
 ### Manual Deployment

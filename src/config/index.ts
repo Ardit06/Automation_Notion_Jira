@@ -35,11 +35,11 @@ export const NOTION_TO_JIRA_MAPPING: Record<string, string> = {
   'Title': 'summary',
   'Description': 'description',
   'Story Points': 'customfield_10016',
-  'Labels': 'labels',
   'Priority': 'priority',
   'Assignee': 'assignee',
   'Epic Link': 'parent',
   'Status': 'status',
+  'Figma Link': 'customfield_10021',
 };
 
 // Required fields for Jira issues
@@ -48,6 +48,14 @@ export const REQUIRED_JIRA_FIELDS = [
   'issuetype',
   'project',
 ];
+
+// Custom field IDs (can be different for each Jira instance)
+export const JIRA_CUSTOM_FIELDS = {
+  STORY_POINTS: process.env.JIRA_STORY_POINTS_FIELD_ID || 'customfield_10016',
+  FIGMA_LINK: process.env.JIRA_FIGMA_LINK_FIELD_ID || 'customfield_10021',
+  EPIC_TYPE: process.env.JIRA_EPIC_TYPE_FIELD_ID || 'customfield_12224',
+  EPIC_TYPE_VALUE: process.env.JIRA_EPIC_TYPE_VALUE || '11209', // Functional Epic Type
+};
 
 // Issue type mapping
 export const ISSUE_TYPE_MAPPING: Record<string, string> = {

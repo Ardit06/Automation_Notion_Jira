@@ -76,7 +76,22 @@ export class AutomationService {
       // Determine if this should be an Epic or Story based on database type and page content
       const isEpic = databaseType === 'epics' || 
                     pageData.isEpic === true || 
-                    (pageData.title && pageData.title.toLowerCase().includes('epic'));
+                    (pageData.title && pageData.title.toLowerCase().includes('epic')) ||
+                    // Additional Epic detection patterns
+                    (pageData.title && (
+                      pageData.title.toLowerCase().includes('dashboard') ||
+                      pageData.title.toLowerCase().includes('setup') ||
+                      pageData.title.toLowerCase().includes('system') ||
+                      pageData.title.toLowerCase().includes('platform') ||
+                      pageData.title.toLowerCase().includes('feature')
+                    ));
+      
+      // Debug logging for Epic detection
+      logger.info(`🔍 EPIC DETECTION DEBUG:`);
+      logger.info(`   📊 Database Type: ${databaseType}`);
+      logger.info(`   🏷️ PageData.isEpic: ${pageData.isEpic}`);
+      logger.info(`   📝 Title: "${pageData.title}"`);
+      logger.info(`   🎯 Final isEpic result: ${isEpic}`);
 
       // Check for duplicates by title to prevent creating multiple tickets
       const duplicateIssue = await this.jiraService.findDuplicateIssue(pageData.title, isEpic ? 'Epic' : 'Story');
@@ -94,11 +109,13 @@ export class AutomationService {
       }
 
       // Creation gate differs for Epics vs Stories
-      // - Epics: create when status is 'Approved'
-      // - Stories: create when status is 'Ready For Dev'
+      // - Epics: create when status is 'Approved', 'Draft', or 'In Progress' (for testing)
+      // - Stories: create when status is 'Ready For Dev', 'Draft', or 'In Progress' (for testing)
       const requiresCreationApproval = isEpic ? 'Approved' : 'Ready For Dev';
-      if (pageData.status !== requiresCreationApproval) {
-        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status}', waiting for '${requiresCreationApproval}'`);
+      const allowedStatuses = isEpic ? ['Approved', 'Draft', 'In Progress'] : ['Ready For Dev', 'Draft', 'In Progress'];
+      
+      if (!pageData.status || !allowedStatuses.includes(pageData.status)) {
+        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status || 'undefined'}', waiting for one of: ${allowedStatuses.join(', ')}`);
         return;
       }
       
@@ -142,6 +159,13 @@ export class AutomationService {
         logger.info(`🏗️ Creating Epic for: "${pageData.title}" (Database: ${databaseType}, Epic field: Yes)`);
         logger.info(`📅 Epic dates: Start=${pageData.startDate}, End=${pageData.endDate}`);
         logger.info(`📝 Epic description: "${pageData.description?.substring(0, 200)}..."`);
+        logger.info(`🔗 Notion URL: ${notionUrl}`);
+        
+        if (pageData.figmaLink) {
+          logger.info(`🎨 Figma link found: ${pageData.figmaLink}`);
+        } else {
+          logger.info(`⚠️ No Figma link found in Notion page`);
+        }
         
         jiraIssue = await this.jiraService.createEpic(
           pageData.title,
@@ -151,7 +175,7 @@ export class AutomationService {
           notionUrl,
           pageData.startDate,
           pageData.endDate,
-          pageData.requirementsEngineer
+          pageData.figmaLink
         );
         
         logger.info(`✅ Epic created successfully: ${jiraIssue.key}`);
@@ -185,20 +209,26 @@ export class AutomationService {
         
         logger.info(`📝 Story description: "${pageData.description?.substring(0, 200)}..."`);
         logger.info(`📊 Story points: ${pageData.storyPoints}`);
+        logger.info(`🔗 Notion URL: ${notionUrl}`);
+
+        if (pageData.figmaLink) {
+          logger.info(`🎨 Figma link found: ${pageData.figmaLink}`);
+        } else {
+          logger.info(`⚠️ No Figma link found in Notion page`);
+        }
 
         jiraIssue = await this.jiraService.createStory(
           pageData.title,
           pageData.description,
           epicKey || undefined,
           pageData.storyPoints,
-          pageData.labels,
           pageData.dueDate,
           pageData.priority,
           notionUrl,
           pageData.redDate,
           pageData.greenDate,
           pageData.blueDate,
-          pageData.requirementsEngineer
+          pageData.figmaLink
         );
         
         logger.info(`✅ Story created successfully: ${jiraIssue.key}`);
@@ -361,12 +391,19 @@ export class AutomationService {
 
       const jiraKey = jiraLinkResult.jiraKey;
 
-      // Define status change triggers - focus on "back to Ready for Dev"
+      // Define status change triggers - focused approach
       const statusChangeTriggers = [
-        { from: 'Review', to: 'Ready For Dev' }, // Back to ready for dev
-        { from: 'In Progress', to: 'Ready For Dev' }, // Back to ready
-        { from: 'In Review', to: 'Ready For Dev' }, // Back to ready from review
-        { from: 'Done', to: 'Ready For Dev' } // Back to ready from done
+        // Moving to Review - notify scrum masters
+        { from: 'Ready For Dev', to: 'Review' },
+        { from: 'In Progress', to: 'Review' },
+        { from: 'Testing', to: 'Review' },
+        { from: 'Blocked', to: 'Review' },
+        
+        // Back to Ready For Dev - update content if changed
+        { from: 'Review', to: 'Ready For Dev' },
+        { from: 'In Progress', to: 'Ready For Dev' },
+        { from: 'Testing', to: 'Ready For Dev' },
+        { from: 'Blocked', to: 'Ready For Dev' }
       ];
 
       // Check if this status change should trigger a comment
@@ -384,69 +421,47 @@ export class AutomationService {
         return { handled: false };
       }
 
-      // Add comment to JIRA
-      const scrumMasterEmails = config.notifications.scrumMasterEmails;
-      const commentAdded = await this.jiraService.addStatusChangeComment(
-        jiraKey,
-        oldStatus!,
-        newStatus!,
-        scrumMasterEmails
-      );
-
-      if (commentAdded) {
-        logger.info(`✅ Status change comment added to ${jiraKey}`);
-
-        // Special handling: If status changed to "Ready For Dev", tag the appropriate person
-        if (newStatus === 'Ready For Dev') {
-          logger.info(`🚀 Status changed to "Ready For Dev" - adding tagged comment`);
-          
-          // First, check if the issue is resolved and reopen it if needed
-          const issueStatus = await this.jiraService.getIssueStatus(jiraKey);
-          if (issueStatus === 'Done' || issueStatus === 'Resolved') {
-            logger.info(`🔄 Issue ${jiraKey} is resolved, reopening for Ready For Dev status`);
-            await this.jiraService.reopenIssue(jiraKey, currentPageData.title || 'Unknown Issue');
-          }
-          
-          // Determine who to tag based on available data
-          let taggedUserEmail: string | undefined;
-          let taggedUserName: string | undefined;
-          
-          // Priority 1: Use Requirements Engineer if available
-          if (currentPageData.requirementsEngineer) {
-            taggedUserEmail = currentPageData.requirementsEngineer;
-            taggedUserName = 'Requirements Engineer';
-            logger.info(`👤 Tagging Requirements Engineer: ${currentPageData.requirementsEngineer}`);
-          } else {
-            // Priority 2: Use a default person (Aurita Bytyqi)
-            taggedUserEmail = 'aurita@91.life';
-            taggedUserName = 'Aurita Bytyqi';
-            logger.info(`👤 Tagging default person: Aurita Bytyqi (aurita@91.life)`);
-          }
-          
-          const readyForDevComment = await this.jiraService.addReadyForDevTagComment(
-            jiraKey,
-            currentPageData.title || 'Unknown Issue',
-            taggedUserEmail,
-            taggedUserName
-          );
-          
-          if (readyForDevComment) {
-            logger.info(`✅ Ready For Dev tagged comment added to ${jiraKey} for ${taggedUserName}`);
-          }
+      // Handle different status change scenarios
+      if (newStatus === 'Review') {
+        // Moving TO Review - notify scrum masters
+        logger.info(`👀 Status changed to "Review" - notifying scrum masters`);
+        
+        const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        await this.jiraService.addReviewNotificationComment(
+          jiraKey,
+          oldStatus!,
+          newStatus!,
+          currentPageData.title || 'Unknown Issue',
+          scrumMasterEmails
+        );
+        
+        logger.info(`✅ Review notification comment added to ${jiraKey}`);
+        
+      } else if (newStatus === 'Ready For Dev') {
+        // Moving back TO Ready For Dev - update content and notify
+        logger.info(`🚀 Status changed to "Ready For Dev" - updating content and notifying`);
+        
+        // First, check if the issue is resolved and reopen it if needed
+        const issueStatus = await this.jiraService.getIssueStatus(jiraKey);
+        if (issueStatus === 'Done' || issueStatus === 'Resolved') {
+          logger.info(`🔄 Issue ${jiraKey} is resolved, reopening for Ready For Dev status`);
+          await this.jiraService.reopenIssue(jiraKey, currentPageData.title || 'Unknown Issue');
         }
-
-        // Special handling: If status changed FROM "Ready For Dev" to something else, resolve the Jira issue
-        if (oldStatus === 'Ready For Dev' && newStatus !== 'Ready For Dev') {
-          logger.info(`🔄 Status changed FROM "Ready For Dev" to "${newStatus}" - resolving Jira issue ${jiraKey}`);
-          
-          const resolved = await this.jiraService.resolveIssue(jiraKey, newStatus || 'Unknown Status', currentPageData.title || 'Unknown Issue');
-          
-          if (resolved) {
-            logger.info(`✅ Jira issue ${jiraKey} resolved due to status change away from Ready For Dev`);
-          } else {
-            logger.warn(`⚠️ Failed to resolve Jira issue ${jiraKey}`);
-          }
-        }
+        
+        // Update the Jira issue description with latest content from Notion
+        await this.updateJiraIssueContent(jiraKey, currentPageData, pageId);
+        
+        // Add notification comment
+        const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        await this.jiraService.addReadyForDevUpdateComment(
+          jiraKey,
+          oldStatus!,
+          newStatus!,
+          currentPageData.title || 'Unknown Issue',
+          scrumMasterEmails
+        );
+        
+        logger.info(`✅ Ready For Dev update comment added to ${jiraKey}`);
       }
 
       // Update cache
@@ -460,6 +475,29 @@ export class AutomationService {
     } catch (error) {
       logger.error(`Error handling status change for page ${pageId}:`, error);
       return { handled: false };
+    }
+  }
+
+  async updateJiraIssueContent(jiraKey: string, pageData: any, pageId: string): Promise<void> {
+    try {
+      logger.info(`🔄 Updating Jira issue content for ${jiraKey}`);
+      
+      // Get fresh content from Notion
+      const notionUrl = `https://www.notion.so/${pageId.replace(/-/g, '')}`;
+      const freshDescription = this.jiraService.createDescriptionADF(pageData.description, notionUrl, true, pageData.figmaLink);
+      
+      // Update the Jira issue description
+      const updateData = {
+        fields: {
+          description: freshDescription
+        }
+      };
+      
+      await this.jiraService.updateIssue(jiraKey, updateData);
+      logger.info(`✅ Jira issue ${jiraKey} content updated with latest Notion data`);
+      
+    } catch (error) {
+      logger.error(`❌ Failed to update Jira issue content for ${jiraKey}:`, error);
     }
   }
 

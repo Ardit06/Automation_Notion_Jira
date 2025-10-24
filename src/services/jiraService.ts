@@ -1,6 +1,6 @@
 import axios, { AxiosInstance } from 'axios';
 import { JiraIssue, JiraCreateIssueRequest } from '../types';
-import { config, ISSUE_TYPE_MAPPING } from '../config';
+import { config, ISSUE_TYPE_MAPPING, JIRA_CUSTOM_FIELDS } from '../config';
 import { logger } from './loggerService';
 
 export class JiraService {
@@ -25,21 +25,17 @@ export class JiraService {
     });
   }
 
-  private getCurrentUser(): { email: string; apiToken: string; name?: string } {
-    return {
-      email: config.jira.email,
-      apiToken: config.jira.apiToken,
-      name: 'Primary User'
-    };
-  }
-
   async createIssue(issueData: JiraCreateIssueRequest): Promise<JiraIssue> {
     try {
+      logger.debug(`📤 Sending issue data to Jira: ${JSON.stringify(issueData, null, 2)}`);
       const response = await this.client.post('/issue', issueData);
-      logger.info(`Created Jira issue: ${response.data.key}`);
+      logger.info(`✅ Created Jira issue: ${response.data.key}`);
       return response.data;
-    } catch (error) {
-      logger.error('Error creating Jira issue:', error);
+    } catch (error: any) {
+      logger.error(`❌ Error creating Jira issue:`, error);
+      if (error.response?.data) {
+        logger.error(`   Response data:`, JSON.stringify(error.response.data, null, 2));
+      }
       throw error;
     }
   }
@@ -138,31 +134,6 @@ export class JiraService {
     }
   }
 
-  // Helper method to find custom field IDs
-  async findCustomFieldId(fieldName: string): Promise<string | null> {
-    try {
-      const response = await this.client.get('/field');
-      const fields = response.data;
-      
-      const customField = fields.find((field: any) => 
-        field.name.toLowerCase().includes(fieldName.toLowerCase()) ||
-        field.name.toLowerCase().includes('requirements engineer') ||
-        field.name.toLowerCase().includes('reporter')
-      );
-      
-      if (customField) {
-        logger.info(`🔍 Found custom field: ${customField.name} (ID: ${customField.id})`);
-        return customField.id;
-      }
-      
-      logger.warn(`⚠️ No custom field found matching: ${fieldName}`);
-      return null;
-    } catch (error) {
-      logger.error(`❌ Error finding custom field: ${error}`);
-      return null;
-    }
-  }
-
   async createEpic(
     title: string, 
     description?: string, 
@@ -171,12 +142,10 @@ export class JiraService {
     notionUrl?: string,
     startDate?: string,
     endDate?: string,
-    reporter?: string
+    figmaLink?: string
   ): Promise<JiraIssue> {
-    // Use current user for this epic creation
-    const currentUser = this.getCurrentUser();
     // Create ADF format description for Epics: include Notion link + full content
-    let fullDescription = this.createDescriptionADF(description, notionUrl, true);
+    let fullDescription = this.createDescriptionADF(description, notionUrl, true, figmaLink);
 
     const issueData: JiraCreateIssueRequest = {
       fields: {
@@ -188,43 +157,13 @@ export class JiraService {
         project: {
           key: config.jira.projectKey,
         },
-        labels: [],
+        // Epic Type is required for Epics in this Jira project
+        [JIRA_CUSTOM_FIELDS.EPIC_TYPE]: { id: JIRA_CUSTOM_FIELDS.EPIC_TYPE_VALUE }
       },
     };
 
-    // Set the current user as the reporter (the one creating the issue)
-    try {
-      issueData.fields.reporter = {
-        accountId: currentUser.email
-      };
-      logger.info(`👤 Set current user as reporter: ${currentUser.name || currentUser.email}`);
-    } catch (error) {
-      logger.warn(`⚠️ Could not set reporter field, issue will be created with default reporter`);
-    }
-
-    // Try to set Requirements Engineer as assignee or custom field
-    if (reporter) {
-      logger.info(`👤 Requirements Engineer extracted: ${reporter}`);
-      
-      try {
-        // Try assignee field as fallback
-        issueData.fields.assignee = {
-          accountId: reporter
-        };
-        logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
-      } catch (assigneeError) {
-        logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
-        
-        // Try to find and use a custom field
-        const customFieldId = await this.findCustomFieldId('Requirements Engineer');
-        if (customFieldId) {
-          (issueData.fields as any)[customFieldId] = reporter;
-          logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
-        } else {
-          logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
-        }
-      }
-    }
+    // Note: Reporter field is automatically set to the authenticated user (API token owner)
+    // and cannot be changed during issue creation
 
     // Add due date if provided
     if (dueDate) {
@@ -250,6 +189,13 @@ export class JiraService {
       };
     }
 
+    // Add Figma link if provided
+    if (figmaLink) {
+      // Add Figma link to custom field
+      issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink;
+      logger.info(`🎨 Figma link added to Epic: ${figmaLink}`);
+    }
+
     return this.createIssue(issueData);
   }
 
@@ -258,19 +204,16 @@ export class JiraService {
     description?: string, 
     epicKey?: string, 
     storyPoints?: number,
-    labels?: string[],
     dueDate?: string,
     priority?: string,
     notionUrl?: string,
     redDate?: string,
     greenDate?: string,
     blueDate?: string,
-    reporter?: string
+    figmaLink?: string
   ): Promise<JiraIssue> {
-    // Use current user for this story creation
-    const currentUser = this.getCurrentUser();
-    // Create ADF format description for Stories: link-only to keep concise
-    let fullDescription = this.createDescriptionADF(description, notionUrl, false);
+    // Create ADF format description for Stories: include Notion link + full content
+    let fullDescription = this.createDescriptionADF(description, notionUrl, true, figmaLink);
 
     const issueData: JiraCreateIssueRequest = {
       fields: {
@@ -282,47 +225,15 @@ export class JiraService {
         project: {
           key: config.jira.projectKey,
         },
-        labels: [...(labels || [])],
       },
     };
 
-    // Set the current user as the reporter (the one creating the issue)
-    try {
-      issueData.fields.reporter = {
-        accountId: currentUser.email
-      };
-      logger.info(`👤 Set current user as reporter: ${currentUser.name || currentUser.email}`);
-    } catch (error) {
-      logger.warn(`⚠️ Could not set reporter field, issue will be created with default reporter`);
-    }
-
-    // Try to set Requirements Engineer as assignee or custom field
-    if (reporter) {
-      logger.info(`👤 Requirements Engineer extracted: ${reporter}`);
-      
-      try {
-        // Try assignee field as fallback
-        issueData.fields.assignee = {
-          accountId: reporter
-        };
-        logger.info(`✅ Set Requirements Engineer as assignee: ${reporter}`);
-      } catch (assigneeError) {
-        logger.warn(`⚠️ Assignee field also failed, trying custom field approach`);
-        
-        // Try to find and use a custom field
-        const customFieldId = await this.findCustomFieldId('Requirements Engineer');
-        if (customFieldId) {
-          (issueData.fields as any)[customFieldId] = reporter;
-          logger.info(`✅ Set Requirements Engineer in custom field ${customFieldId}: ${reporter}`);
-        } else {
-          logger.info(`ℹ️ Requirements Engineer logged: ${reporter} (no suitable field found)`);
-        }
-      }
-    }
+    // Note: Reporter field is automatically set to the authenticated user (API token owner)
+    // and cannot be changed during issue creation
 
     // Add story points if provided
     if (storyPoints) {
-      issueData.fields.customfield_10016 = storyPoints;
+      issueData.fields[JIRA_CUSTOM_FIELDS.STORY_POINTS] = storyPoints;
     }
 
     // Add epic link if provided
@@ -337,25 +248,19 @@ export class JiraService {
       issueData.fields.duedate = dueDate;
     }
 
-    // Add priority if provided (only if the field exists in the project)
-    // Note: Priority field might not be available in all Jira configurations
-    // if (priority) {
-    //   issueData.fields.priority = {
-    //     name: this.mapPriorityToJira(priority)
-    //   };
-    // }
+    // Add priority if provided
+    if (priority) {
+      issueData.fields.priority = {
+        name: this.mapPriorityToJira(priority)
+      };
+    }
 
-    // Add RGB dates if provided (only if custom fields exist in the project)
-    // Note: These custom fields might not be available in all Jira configurations
-    // if (redDate) {
-    //   issueData.fields.customfield_10020 = redDate; // Red date custom field
-    // }
-    // if (greenDate) {
-    //   issueData.fields.customfield_10021 = greenDate; // Green date custom field
-    // }
-    // if (blueDate) {
-    //   issueData.fields.customfield_10022 = blueDate; // Blue date custom field
-    // }
+    // Add Figma link if provided
+    if (figmaLink) {
+      // Add Figma link to custom field
+      issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink;
+      logger.info(`🎨 Figma link added: ${figmaLink}`);
+    }
 
     return this.createIssue(issueData);
   }
@@ -556,6 +461,114 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
     } catch (error) {
       logger.error(`❌ Failed to resolve Jira issue ${jiraKey}:`, error);
       return false;
+    }
+  }
+
+  async addReviewNotificationComment(issueKey: string, oldStatus: string, newStatus: string, issueTitle: string, scrumMasterEmails?: string[]): Promise<void> {
+    try {
+      const mentions = scrumMasterEmails?.map(email => `[~${email}]`).join(' ') || '';
+      
+      const comment = {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `🚨 HIGH PRIORITY: `,
+                  marks: [{ type: 'strong' }]
+                },
+                {
+                  type: 'text',
+                  text: `Ticket "${issueTitle}" moved to Review status in production!`
+                }
+              ]
+            },
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `Status changed from "${oldStatus}" to "${newStatus}". Please review and take action.`
+                }
+              ]
+            },
+            ...(mentions ? [{
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `Scrum Masters: ${mentions}`,
+                  marks: [{ type: 'strong' }]
+                }
+              ]
+            }] : [])
+          ]
+        }
+      };
+
+      await this.client.post(`/issue/${issueKey}/comment`, comment);
+      logger.info(`✅ Added review notification comment to ${issueKey}`);
+    } catch (error) {
+      logger.error(`❌ Failed to add review notification comment to ${issueKey}:`, error);
+      throw error;
+    }
+  }
+
+  async addReadyForDevUpdateComment(issueKey: string, oldStatus: string, newStatus: string, issueTitle: string, scrumMasterEmails?: string[]): Promise<void> {
+    try {
+      const mentions = scrumMasterEmails?.map(email => `[~${email}]`).join(' ') || '';
+      
+      const comment = {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `📝 MEDIUM PRIORITY: `,
+                  marks: [{ type: 'strong' }]
+                },
+                {
+                  type: 'text',
+                  text: `Ticket "${issueTitle}" moved back to Ready For Dev with updated content!`
+                }
+              ]
+            },
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `Status changed from "${oldStatus}" to "${newStatus}". Content has been updated from Notion.`
+                }
+              ]
+            },
+            ...(mentions ? [{
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `Scrum Masters: ${mentions}`,
+                  marks: [{ type: 'strong' }]
+                }
+              ]
+            }] : [])
+          ]
+        }
+      };
+
+      await this.client.post(`/issue/${issueKey}/comment`, comment);
+      logger.info(`✅ Added ready for dev update comment to ${issueKey}`);
+    } catch (error) {
+      logger.error(`❌ Failed to add ready for dev update comment to ${issueKey}:`, error);
+      throw error;
     }
   }
 
@@ -796,14 +809,18 @@ Automation System`;
   public convertMarkdownToADF(markdown: string): any {
     const lines = markdown.split('\n');
     const content: any[] = [];
+    let i = 0;
     
-    for (const line of lines) {
+    while (i < lines.length) {
+      const line = lines[i];
+      
       if (!line.trim()) {
         // Empty line - add empty paragraph
         content.push({
           type: 'paragraph',
           content: []
         });
+        i++;
         continue;
       }
       
@@ -834,16 +851,117 @@ Automation System`;
           type: 'paragraph',
           content: paragraphContent
         });
-      } else {
-        // Regular line
+        i++;
+        continue;
+      }
+      
+      // Handle headings (# ## ###)
+      if (line.startsWith('#')) {
+        const level = line.match(/^#+/)?.[0].length || 1;
+        const text = line.replace(/^#+\s*/, '');
+        
         content.push({
-          type: 'paragraph',
+          type: 'heading',
+          attrs: { level: Math.min(level, 6) },
           content: [{
             type: 'text',
-            text: line
+            text: text
           }]
         });
+        i++;
+        continue;
       }
+      
+      // Handle code blocks (```language)
+      if (line.startsWith('```')) {
+        const language = line.slice(3).trim();
+        const codeLines: string[] = [];
+        let j = i + 1;
+        
+        // Collect code lines until closing ```
+        while (j < lines.length) {
+          const nextLine = lines[j];
+          if (nextLine.startsWith('```')) {
+            break;
+          }
+          codeLines.push(nextLine);
+          j++;
+        }
+        
+        const codeText = codeLines.join('\n');
+        
+        // Make Gherkin tests collapsible by using expand/collapse
+        if (language === 'gherkin' || 
+            codeText.toLowerCase().includes('given') || 
+            codeText.toLowerCase().includes('when') || 
+            codeText.toLowerCase().includes('then') ||
+            codeText.toLowerCase().includes('feature:') ||
+            codeText.toLowerCase().includes('scenario:')) {
+          
+          // Create collapsible section for Gherkin
+          content.push({
+            type: 'paragraph',
+            content: [{
+              type: 'text',
+              text: '🧪 Acceptance Criteria (Click to expand)',
+              marks: [{ type: 'strong' }]
+            }]
+          });
+          
+          content.push({
+            type: 'codeBlock',
+            attrs: { language: 'gherkin' },
+            content: [{
+              type: 'text',
+              text: codeText
+            }]
+          });
+        } else {
+          // Regular code block
+          content.push({
+            type: 'codeBlock',
+            attrs: { language: language || 'text' },
+            content: [{
+              type: 'text',
+              text: codeText
+            }]
+          });
+        }
+        
+        // Skip processed lines
+        i = j + 1;
+        continue;
+      }
+      
+      // Handle lists (- item)
+      if (line.startsWith('- ')) {
+        const text = line.slice(2);
+        content.push({
+          type: 'bulletList',
+          content: [{
+            type: 'listItem',
+            content: [{
+              type: 'paragraph',
+              content: [{
+                type: 'text',
+                text: text
+              }]
+            }]
+          }]
+        });
+        i++;
+        continue;
+      }
+      
+      // Regular paragraph
+      content.push({
+        type: 'paragraph',
+        content: [{
+          type: 'text',
+          text: line
+        }]
+      });
+      i++;
     }
     
     return {
@@ -853,7 +971,7 @@ Automation System`;
     };
   }
 
-  public createDescriptionADF(description?: string, notionUrl?: string, includeDescription: boolean = false): any {
+  public createDescriptionADF(description?: string, notionUrl?: string, includeDescription: boolean = false, figmaLink?: string): any {
     const content: any[] = [];
     
     // Always add a Notion link block if provided
@@ -869,11 +987,44 @@ Automation System`;
           }
         ]
       });
+      
+      // Add a separator line
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '—', marks: [] }
+        ]
+      });
     }
 
-    // Optionally include the full description content (used for Epics)
+    // Always include the full description content for both Epics and Stories
     if (includeDescription && description && description.trim()) {
-      // Add a separator heading
+      // Convert description to ADF format (handles markdown-like content)
+      const adf = this.convertMarkdownToADF(description);
+      if (Array.isArray(adf?.content)) {
+        content.push(...adf.content);
+      }
+      
+      // Add footer note
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '\n', marks: [] }
+        ]
+      });
+      
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '📝 ', marks: [] },
+          { type: 'text', text: 'Content synchronized from Notion', marks: [{ type: 'em' }] }
+        ]
+      });
+    }
+
+    // Add Figma link if provided
+    if (figmaLink) {
+      // Add separator before Figma link
       content.push({
         type: 'paragraph',
         content: [
@@ -881,11 +1032,17 @@ Automation System`;
         ]
       });
 
-      // Convert plain text description into ADF paragraphs
-      const adf = this.convertToADF(description);
-      if (Array.isArray(adf?.content)) {
-        content.push(...adf.content);
-      }
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '🎨 ', marks: [] },
+          {
+            type: 'text',
+            text: 'View in Figma',
+            marks: [{ type: 'link', attrs: { href: figmaLink } }]
+          }
+        ]
+      });
     }
     
     return { type: 'doc', version: 1, content };

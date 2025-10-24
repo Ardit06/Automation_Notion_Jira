@@ -32,27 +32,144 @@ export class NotionService {
       const response = await this.client.get(`/blocks/${pageId}/children`);
       const blocks = response.data.results;
       
-      // Extract text content from blocks
+      logger.debug(`📄 Fetching page content for ${pageId}: found ${blocks.length} blocks`);
+      
+      // Extract comprehensive text content from blocks
       let content = '';
+      let listCounter = 1;
+      
       for (const block of blocks) {
-        if (block.type === 'paragraph' && block.paragraph?.rich_text) {
-          const text = block.paragraph.rich_text
-            .map((text: any) => text.plain_text)
-            .join('');
-          content += text + '\n';
-        } else if (block.type === 'bulleted_list_item' && block.bulleted_list_item?.rich_text) {
-          const text = block.bulleted_list_item.rich_text
-            .map((text: any) => text.plain_text)
-            .join('');
-          content += '• ' + text + '\n';
-        } else if (block.type === 'numbered_list_item' && block.numbered_list_item?.rich_text) {
-          const text = block.numbered_list_item.rich_text
-            .map((text: any) => text.plain_text)
-            .join('');
-          content += '1. ' + text + '\n';
+        switch (block.type) {
+          case 'paragraph':
+            if (block.paragraph?.rich_text) {
+              const text = block.paragraph.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              if (text.trim()) {
+                content += text + '\n\n';
+              }
+            }
+            break;
+            
+          case 'bulleted_list_item':
+            if (block.bulleted_list_item?.rich_text) {
+              const text = block.bulleted_list_item.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += '• ' + text + '\n';
+            }
+            break;
+            
+          case 'numbered_list_item':
+            if (block.numbered_list_item?.rich_text) {
+              const text = block.numbered_list_item.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `${listCounter}. ` + text + '\n';
+              listCounter++;
+            }
+            break;
+            
+          case 'heading_1':
+            if (block.heading_1?.rich_text) {
+              const text = block.heading_1.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `# ${text}\n\n`;
+            }
+            break;
+            
+          case 'heading_2':
+            if (block.heading_2?.rich_text) {
+              const text = block.heading_2.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `## ${text}\n\n`;
+            }
+            break;
+            
+          case 'heading_3':
+            if (block.heading_3?.rich_text) {
+              const text = block.heading_3.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `### ${text}\n\n`;
+            }
+            break;
+            
+          case 'quote':
+            if (block.quote?.rich_text) {
+              const text = block.quote.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `> ${text}\n\n`;
+            }
+            break;
+            
+          case 'code':
+            if (block.code?.rich_text) {
+              const text = block.code.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              const language = block.code.language || '';
+              
+              // Make Gherkin tests collapsible
+              if (language === 'gherkin' || text.toLowerCase().includes('given') || text.toLowerCase().includes('when') || text.toLowerCase().includes('then')) {
+                content += `\`\`\`gherkin\n${text}\n\`\`\`\n\n`;
+              } else {
+                content += `\`\`\`${language}\n${text}\n\`\`\`\n\n`;
+              }
+            }
+            break;
+            
+          case 'callout':
+            if (block.callout?.rich_text) {
+              const text = block.callout.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              const icon = block.callout.icon?.emoji || '💡';
+              content += `${icon} ${text}\n\n`;
+            }
+            break;
+            
+          case 'toggle':
+            if (block.toggle?.rich_text) {
+              const text = block.toggle.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              content += `▶ ${text}\n\n`;
+            }
+            break;
+            
+          case 'divider':
+            content += '---\n\n';
+            break;
+            
+          case 'to_do':
+            if (block.to_do?.rich_text) {
+              const text = block.to_do.rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              const checked = block.to_do.checked ? '☑' : '☐';
+              content += `${checked} ${text}\n`;
+            }
+            break;
+            
+          default:
+            // For any other block types, try to extract text if available
+            if (block[block.type]?.rich_text) {
+              const text = block[block.type].rich_text
+                .map((text: any) => text.plain_text)
+                .join('');
+              if (text.trim()) {
+                content += text + '\n';
+              }
+            }
+            break;
         }
       }
       
+      logger.debug(`✅ Extracted ${content.length} characters from page content for ${pageId}`);
       return content.trim();
     } catch (error) {
       logger.error(`Error fetching page content for ${pageId}:`, error);
@@ -493,14 +610,23 @@ export class NotionService {
     status?: string;
     issueType?: string;
     storyPoints?: number;
-    labels?: string[];
     epicLink?: string;
+    parentEpic?: string;
     priority?: string;
     dueDate?: string;
     startDate?: string;
     endDate?: string;
     epicKey?: string;
-    requirementsEngineer?: string;
+    redDate?: string;
+    greenDate?: string;
+    blueDate?: string;
+    isEpic?: boolean;
+    devStartDate?: string;
+    devEndDate?: string;
+    owner?: string;
+    roadmap?: string;
+    vertical?: string;
+    figmaLink?: string;
     [key: string]: any;
   }> {
     const properties = page.properties;
@@ -521,6 +647,13 @@ export class NotionService {
       description = await this.getPageContent(page.id);
     }
     
+    // Log description extraction for debugging
+    if (!description || description.trim() === '') {
+      logger.warn(`⚠️ No description found for page ${page.id} - Jira ticket will be created without description`);
+    } else {
+      logger.info(`✅ Description extracted successfully (${description.length} characters)`);
+    }
+    
     // Try to extract title from different possible property names
     let title = this.extractTextValue(properties['Name']) || 
                 this.extractTextValue(properties['Title']) || 
@@ -538,14 +671,32 @@ export class NotionService {
       epicKey = await this.extractEpicKeyFromRelation(properties['🚀 Initiatives']);
     }
 
+    // Extract parent epic key if it exists
+    let parentEpic = undefined;
+    if (properties['Parent Epic'] || properties['Parent Epic Key']) {
+      parentEpic = this.extractTextValue(properties['Parent Epic']) || 
+                   this.extractTextValue(properties['Parent Epic Key']);
+    }
+
+    // Extract Figma link if it exists
+    const figmaLink = this.extractTextValue(properties['Figma Link']) || 
+                     this.extractTextValue(properties['Figma']) ||
+                     this.extractTextValue(properties['Design Link']);
+    
+    if (figmaLink) {
+      logger.info(`🎨 Figma link extracted: ${figmaLink}`);
+    } else {
+      logger.debug(`⚠️ No Figma link found in Notion page properties`);
+    }
+
     const extractedData = {
       title: title,
       description: description,
       status: this.extractSelectValue(properties['Status']),
       issueType: 'Story', // Default to Story since no Issue Type property
       storyPoints: this.extractNumberValue(properties['Story Points']),
-      labels: [], // No Labels property
       epicLink: epicKey,
+      parentEpic: parentEpic,
       priority: this.extractSelectValue(properties['Priority']),
       dueDate: this.extractDateValue(properties['Due Date']),
       startDate: this.extractDateValue(properties['Start Date']),
@@ -555,8 +706,14 @@ export class NotionService {
       redDate: this.extractDateValue(properties['Red Date']) || this.extractDateValue(properties['Red']),
       greenDate: this.extractDateValue(properties['Green Date']) || this.extractDateValue(properties['Green']),
       blueDate: this.extractDateValue(properties['Blue Date']) || this.extractDateValue(properties['Blue']),
-      // Requirements Engineer field for reporter
-      requirementsEngineer: this.extractTextValue(properties['Requirements Engineer']) || this.extractTextValue(properties['Owner']),
+      // Epic-specific fields
+      isEpic: this.extractCheckboxValue(properties['Epic']) || this.extractCheckboxValue(properties['Is Epic']),
+      devStartDate: this.extractDateValue(properties['Dev Start Date']) || this.extractDateValue(properties['Development Start']),
+      devEndDate: this.extractDateValue(properties['Dev End Date']) || this.extractDateValue(properties['Development End']),
+      owner: this.extractTextValue(properties['Owner']),
+      roadmap: this.extractTextValue(properties['Roadmap']),
+      vertical: this.extractTextValue(properties['Vertical']),
+      figmaLink: figmaLink,
     };
     
     logger.debug(`📊 Final extracted data:`, JSON.stringify(extractedData, null, 2));
@@ -632,6 +789,11 @@ export class NotionService {
   private extractDateValue(property: any): string | undefined {
     if (!property || property.type !== 'date') return undefined;
     return property.date?.start;
+  }
+
+  private extractCheckboxValue(property: any): boolean | undefined {
+    if (!property || property.type !== 'checkbox') return undefined;
+    return property.checkbox;
   }
 
   private async validateFieldType(pageId: string, fieldName: string): Promise<boolean> {
