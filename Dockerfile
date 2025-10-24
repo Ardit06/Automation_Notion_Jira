@@ -1,17 +1,15 @@
-# Use Node.js 18 Alpine for smaller image size
-FROM node:18-alpine
+# Multi-stage build for smaller final image
+# Stage 1: Builder
+FROM node:18-alpine as builder
 
 # Set working directory
-WORKDIR /app
-
-# Install dumb-init for proper signal handling
-RUN apk add --no-cache dumb-init
+WORKDIR /build
 
 # Copy package files
 COPY package*.json ./
 
-# Install dependencies
-RUN npm ci --only=production && npm cache clean --force
+# Install all dependencies (including devDependencies for build)
+RUN npm ci
 
 # Copy source code
 COPY . .
@@ -19,12 +17,36 @@ COPY . .
 # Build the TypeScript code
 RUN npm run build
 
-# Create logs directory
-RUN mkdir -p logs
+# Stage 2: Runtime
+FROM node:18-alpine
+
+# Metadata labels
+LABEL maintainer="Ardit <ardit@91.life>"
+LABEL description="Notion to Jira Automation Service"
+LABEL version="1.0.0"
+
+# Set working directory
+WORKDIR /app
+
+# Install dumb-init for proper signal handling
+RUN apk add --no-cache dumb-init
+
+# Copy package files from builder
+COPY package*.json ./
+
+# Install only production dependencies
+RUN npm ci --only=production && npm cache clean --force
+
+# Copy built application from builder stage
+COPY --from=builder /build/dist ./dist
+COPY --from=builder /build/src/config ./src/config
+
+# Create logs directory with proper permissions
+RUN mkdir -p logs && chmod 755 logs
 
 # Create non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
-    adduser -S nodejs -u 1001
+    adduser -S nodejs -u 1001 -h /app
 
 # Change ownership of the app directory
 RUN chown -R nodejs:nodejs /app
@@ -35,9 +57,9 @@ USER nodejs
 # Expose port (Railway will override this with PORT env var)
 EXPOSE 3003
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "require('http').get('http://localhost:3003/webhook/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+# Health check configuration
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD node -e "require('http').get('http://localhost:3003/webhook/health', (res) => { if (res.statusCode !== 200) throw new Error(res.statusCode) })" || exit 1
 
 # Use dumb-init to handle signals properly
 ENTRYPOINT ["dumb-init", "--"]
