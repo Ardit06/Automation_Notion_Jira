@@ -93,20 +93,24 @@ export class AutomationService {
       logger.info(`   📝 Title: "${pageData.title}"`);
       logger.info(`   🎯 Final isEpic result: ${isEpic}`);
 
-      // Check for duplicates by title to prevent creating multiple tickets
+      // Secondary check: Search Jira by title (catches edge cases where link was removed from Notion)
+      logger.info(`🔍 DUPLICATE CHECK: Searching Jira for issues with same title...`);
       const duplicateIssue = await this.jiraService.findDuplicateIssue(pageData.title, isEpic ? 'Epic' : 'Story');
       if (duplicateIssue) {
-        logger.warn(`⚠️ DUPLICATE ISSUE DETECTED:`);
+        logger.warn(`⚠️ DUPLICATE DETECTED (by Title):`);
         logger.warn(`   📋 Existing Jira Key: ${duplicateIssue.key}`);
         logger.warn(`   📝 Title: "${duplicateIssue.fields.summary}"`);
         logger.warn(`   📄 Notion Page: ${pageId}`);
+        logger.warn(`   💡 Reason: Found Jira issue with same title in project`);
         logger.warn(`   🚫 Skipping creation to prevent duplication`);
         
-        // Link the existing Jira issue to this Notion page
+        // Link the existing Jira issue to this Notion page for future checks
         await this.notionService.addJiraLink(pageId, duplicateIssue.key, this.jiraService.buildJiraUrl(duplicateIssue.key));
         logger.info(`✅ Linked existing Jira issue ${duplicateIssue.key} to Notion page ${pageId}`);
         return;
       }
+      
+      logger.info(`✅ NO DUPLICATES FOUND: Creating new Jira issue with title "${pageData.title}"`);
 
       // Creation gate differs for Epics vs Stories
       // - Epics: create when status is 'Approved', 'Draft', or 'In Progress' (for testing)
@@ -398,6 +402,12 @@ export class AutomationService {
         { from: 'In Progress', to: 'Review' },
         { from: 'Testing', to: 'Review' },
         { from: 'Blocked', to: 'Review' },
+        { from: 'Draft', to: 'Review' },
+        
+        // Moving to Approved - notify scrum masters
+        { from: 'Review', to: 'Approved' },
+        { from: 'Draft', to: 'Approved' },
+        { from: 'In Progress', to: 'Approved' },
         
         // Back to Ready For Dev - update content if changed
         { from: 'Review', to: 'Ready For Dev' },
@@ -436,6 +446,21 @@ export class AutomationService {
         );
         
         logger.info(`✅ Review notification comment added to ${jiraKey}`);
+        
+      } else if (newStatus === 'Approved') {
+        // Moving TO Approved - notify scrum masters
+        logger.info(`✅ Status changed to "Approved" - notifying scrum masters`);
+        
+        const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        await this.jiraService.addApprovedNotificationComment(
+          jiraKey,
+          oldStatus!,
+          newStatus!,
+          currentPageData.title || 'Unknown Issue',
+          scrumMasterEmails
+        );
+        
+        logger.info(`✅ Approved notification comment added to ${jiraKey}`);
         
       } else if (newStatus === 'Ready For Dev') {
         // Moving back TO Ready For Dev - update content and notify

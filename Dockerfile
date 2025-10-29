@@ -21,7 +21,6 @@ RUN npm run build
 FROM node:18-alpine
 
 # Metadata labels
-LABEL maintainer="Ardit <ardit@91.life>"
 LABEL description="Notion to Jira Automation Service"
 LABEL version="1.0.0"
 
@@ -39,7 +38,6 @@ RUN npm ci --only=production && npm cache clean --force
 
 # Copy built application from builder stage
 COPY --from=builder /build/dist ./dist
-COPY --from=builder /build/src/config ./src/config
 
 # Create logs directory with proper permissions
 RUN mkdir -p logs && chmod 755 logs

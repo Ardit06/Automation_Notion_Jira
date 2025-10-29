@@ -155,6 +155,43 @@ export class NotionService {
             }
             break;
             
+          case 'child_database':
+            // Extract child database as a table
+            try {
+              // For child_database blocks, we need to get the actual database ID from the block
+              const databaseId = block.child_database?.database_id || block.id;
+              logger.debug(`📊 Found child database block:`, {
+                blockId: block.id,
+                databaseId: databaseId,
+                blockType: block.type,
+                hasTitle: !!block.child_database?.title
+              });
+              const tableContent = await this.extractDatabaseAsTable(databaseId);
+              if (tableContent) {
+                content += tableContent + '\n\n';
+              }
+            } catch (error: any) {
+              logger.warn(`⚠️ Could not extract child database (${block.id}):`, {
+                error: error.message,
+                code: error.code,
+                status: error.status
+              });
+            }
+            break;
+            
+          case 'table':
+            // Extract table content
+            try {
+              logger.debug(`📊 Found table block: ${block.id}`);
+              const tableText = await this.extractTableBlock(block.id);
+              if (tableText) {
+                content += tableText + '\n\n';
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract table:`, error);
+            }
+            break;
+            
           default:
             // For any other block types, try to extract text if available
             if (block[block.type]?.rich_text) {
@@ -531,25 +568,30 @@ export class NotionService {
     try {
       const page = await this.getPage(pageId);
       
-      // First check the Jira Link URL field
-      const jiraLinkProperty = page.properties['Jira Link'];
-      if (jiraLinkProperty?.type === 'url' && jiraLinkProperty.url) {
-        const jiraUrl = jiraLinkProperty.url;
-        // Extract Jira key from URL 
-        const jiraMatch = jiraUrl.match(/\/browse\/([A-Z]+-\d+)/);
-        if (jiraMatch && jiraMatch[1]) {
-          const jiraKey = jiraMatch[1];
-          
-          logger.info(`🔗 EXISTING JIRA LINK FOUND IN URL FIELD:`);
-          logger.info(`   📋 Jira Key: ${jiraKey}`);
-          logger.info(`   🔗 Jira URL: ${jiraUrl}`);
-          logger.info(`   📄 Notion Page: ${pageId}`);
-          
-          return {
-            exists: true,
-            jiraKey,
-            jiraUrl
-          };
+      // Check multiple possible Jira link field names
+      const possibleJiraFields = ['Jira Link', 'Jira Epic Link', 'Jira Story Link', 'Jira Issue Link', 'Jira'];
+      
+      for (const fieldName of possibleJiraFields) {
+        const jiraLinkProperty = page.properties[fieldName];
+        if (jiraLinkProperty?.type === 'url' && jiraLinkProperty.url) {
+          const jiraUrl = jiraLinkProperty.url;
+          // Extract Jira key from URL 
+          const jiraMatch = jiraUrl.match(/\/browse\/([A-Z]+-\d+)/);
+          if (jiraMatch && jiraMatch[1]) {
+            const jiraKey = jiraMatch[1];
+            
+            logger.info(`🔗 EXISTING JIRA LINK FOUND:`);
+            logger.info(`   📋 Jira Key: ${jiraKey}`);
+            logger.info(`   🔗 Jira URL: ${jiraUrl}`);
+            logger.info(`   📄 Notion Page: ${pageId}`);
+            logger.info(`   📝 Field Name: "${fieldName}"`);
+            
+            return {
+              exists: true,
+              jiraKey,
+              jiraUrl
+            };
+          }
         }
       }
       
@@ -839,6 +881,165 @@ export class NotionService {
     }
 
     return undefined;
+  }
+
+  /**
+   * Extract a Notion child database and format it as a markdown table
+   */
+  private async extractDatabaseAsTable(databaseId: string): Promise<string> {
+    try {
+      // Get database metadata to understand the schema
+      const database = await this.getDatabase(databaseId);
+      const databaseTitle = (Array.isArray(database.title) && database.title[0]?.plain_text) 
+        ? database.title[0].plain_text 
+        : 'Table';
+      
+      logger.debug(`📊 Extracting database: ${databaseTitle}`);
+      
+      // Query the database to get all rows
+      const rows = await this.queryDatabase(databaseId);
+      
+      if (rows.length === 0) {
+        logger.debug(`⚠️ Database ${databaseTitle} is empty`);
+        return `**${databaseTitle}** (empty table)`;
+      }
+      
+      // Get column headers from the database schema
+      const properties = database.properties;
+      const columnNames = Object.keys(properties).filter(key => {
+        // Filter out some internal properties if needed
+        return !['Created time', 'Last edited time', 'Created by', 'Last edited by'].includes(key);
+      });
+      
+      if (columnNames.length === 0) {
+        return '';
+      }
+      
+      // Build markdown table
+      let tableContent = `**${databaseTitle}**\n\n`;
+      
+      // Header row
+      tableContent += '| ' + columnNames.join(' | ') + ' |\n';
+      tableContent += '| ' + columnNames.map(() => '---').join(' | ') + ' |\n';
+      
+      // Data rows
+      for (const row of rows) {
+        const rowValues = columnNames.map(colName => {
+          const prop = row.properties[colName];
+          return this.extractPropertyValue(prop) || '';
+        });
+        tableContent += '| ' + rowValues.join(' | ') + ' |\n';
+      }
+      
+      logger.debug(`✅ Extracted ${rows.length} rows from database ${databaseTitle}`);
+      return tableContent;
+      
+    } catch (error: any) {
+      logger.error(`Error extracting database as table (${databaseId}):`, {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data
+      });
+      
+      // If we can't extract the database, return a placeholder
+      return `\n_[Linked Database - could not extract content]_\n\n`;
+    }
+  }
+
+  /**
+   * Extract a Notion table block and format it as markdown
+   */
+  private async extractTableBlock(tableBlockId: string): Promise<string> {
+    try {
+      // Get table rows (children of the table block)
+      const response = await this.client.get(`/blocks/${tableBlockId}/children`);
+      const rows = response.data.results;
+      
+      if (rows.length === 0) {
+        return '';
+      }
+      
+      let tableContent = '';
+      let isFirstRow = true;
+      
+      for (const row of rows) {
+        if (row.type === 'table_row' && row.table_row?.cells) {
+          const cells = row.table_row.cells;
+          const cellTexts = cells.map((cell: any[]) => {
+            return cell.map((text: any) => text.plain_text).join('');
+          });
+          
+          tableContent += '| ' + cellTexts.join(' | ') + ' |\n';
+          
+          // Add separator after first row (header)
+          if (isFirstRow) {
+            tableContent += '| ' + cellTexts.map(() => '---').join(' | ') + ' |\n';
+            isFirstRow = false;
+          }
+        }
+      }
+      
+      logger.debug(`✅ Extracted table with ${rows.length} rows`);
+      return tableContent;
+      
+    } catch (error) {
+      logger.error(`Error extracting table block:`, error);
+      return '';
+    }
+  }
+
+  /**
+   * Extract value from a Notion property (used for database tables)
+   */
+  private extractPropertyValue(property: any): string {
+    if (!property) return '';
+    
+    switch (property.type) {
+      case 'title':
+        return property.title?.map((t: any) => t.plain_text).join('') || '';
+      case 'rich_text':
+        return property.rich_text?.map((t: any) => t.plain_text).join('') || '';
+      case 'number':
+        return property.number?.toString() || '';
+      case 'select':
+        return property.select?.name || '';
+      case 'multi_select':
+        return property.multi_select?.map((s: any) => s.name).join(', ') || '';
+      case 'date':
+        if (property.date?.start) {
+          return property.date.end 
+            ? `${property.date.start} to ${property.date.end}` 
+            : property.date.start;
+        }
+        return '';
+      case 'checkbox':
+        return property.checkbox ? '☑' : '☐';
+      case 'url':
+        return property.url || '';
+      case 'email':
+        return property.email || '';
+      case 'phone_number':
+        return property.phone_number || '';
+      case 'people':
+        return property.people?.map((p: any) => p.name).join(', ') || '';
+      case 'files':
+        return property.files?.map((f: any) => f.name).join(', ') || '';
+      case 'relation':
+        return property.relation?.length > 0 ? `${property.relation.length} linked` : '';
+      case 'formula':
+        // Handle formula results based on their type
+        if (property.formula?.type === 'string') {
+          return property.formula.string || '';
+        } else if (property.formula?.type === 'number') {
+          return property.formula.number?.toString() || '';
+        }
+        return '';
+      case 'status':
+        return property.status?.name || '';
+      default:
+        return '';
+    }
   }
 
   verifyWebhookSignature(payload: string, signature: string): boolean {

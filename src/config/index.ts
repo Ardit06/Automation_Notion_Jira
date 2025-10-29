@@ -25,7 +25,7 @@ export const config: Config = {
     authorizedUsers: (process.env.AUTHORIZED_USERS || '').split(',').map(u => u.trim()),
   },
   notifications: {
-    scrumMasterEmails: (process.env.SCRUM_MASTER_EMAILS || '').split(',').map(e => e.trim()).filter(e => e),
+    scrumMasterEmails: (process.env.SCRUM_MASTER_EMAILS || process.env.SCRUM_MASTER_EMAIL || '').split(',').map(e => e.trim()).filter(e => e),
     enableStatusChangeComments: process.env.ENABLE_STATUS_CHANGE_COMMENTS === 'true',
   },
 };

@@ -157,10 +157,15 @@ export class JiraService {
         project: {
           key: config.jira.projectKey,
         },
-        // Epic Type is required for Epics in this Jira project
-        [JIRA_CUSTOM_FIELDS.EPIC_TYPE]: { id: JIRA_CUSTOM_FIELDS.EPIC_TYPE_VALUE }
       },
     };
+
+    // Epic Type is only required for some Jira projects (e.g., HAR)
+    // Only add if the custom field is configured for this project
+    if (JIRA_CUSTOM_FIELDS.EPIC_TYPE && JIRA_CUSTOM_FIELDS.EPIC_TYPE !== 'none') {
+      issueData.fields[JIRA_CUSTOM_FIELDS.EPIC_TYPE] = { id: JIRA_CUSTOM_FIELDS.EPIC_TYPE_VALUE };
+      logger.debug(`Adding Epic Type field: ${JIRA_CUSTOM_FIELDS.EPIC_TYPE} = ${JIRA_CUSTOM_FIELDS.EPIC_TYPE_VALUE}`);
+    }
 
     // Note: Reporter field is automatically set to the authenticated user (API token owner)
     // and cannot be changed during issue creation
@@ -478,12 +483,12 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
               content: [
                 {
                   type: 'text',
-                  text: `🚨 HIGH PRIORITY: `,
+                  text: `👀 REVIEW REQUESTED: `,
                   marks: [{ type: 'strong' }]
                 },
                 {
                   type: 'text',
-                  text: `Ticket "${issueTitle}" moved to Review status in production!`
+                  text: `Ticket "${issueTitle}" is now in Review status!`
                 }
               ]
             },
@@ -492,7 +497,7 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
               content: [
                 {
                   type: 'text',
-                  text: `Status changed from "${oldStatus}" to "${newStatus}". Please review and take action.`
+                  text: `Status changed from "${oldStatus}" to "${newStatus}". Please review and provide feedback.`
                 }
               ]
             },
@@ -501,7 +506,7 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
               content: [
                 {
                   type: 'text',
-                  text: `Scrum Masters: ${mentions}`,
+                  text: `${mentions} - Please review this ticket.`,
                   marks: [{ type: 'strong' }]
                 }
               ]
@@ -514,6 +519,60 @@ The issue will be automatically reopened if the status returns to "Ready For Dev
       logger.info(`✅ Added review notification comment to ${issueKey}`);
     } catch (error) {
       logger.error(`❌ Failed to add review notification comment to ${issueKey}:`, error);
+      throw error;
+    }
+  }
+
+  async addApprovedNotificationComment(issueKey: string, oldStatus: string, newStatus: string, issueTitle: string, scrumMasterEmails?: string[]): Promise<void> {
+    try {
+      const mentions = scrumMasterEmails?.map(email => `[~${email}]`).join(' ') || '';
+      
+      const comment = {
+        body: {
+          type: 'doc',
+          version: 1,
+          content: [
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `✅ APPROVED: `,
+                  marks: [{ type: 'strong' }]
+                },
+                {
+                  type: 'text',
+                  text: `Ticket "${issueTitle}" has been approved!`
+                }
+              ]
+            },
+            {
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `Status changed from "${oldStatus}" to "${newStatus}". This ticket is now ready to proceed.`
+                }
+              ]
+            },
+            ...(mentions ? [{
+              type: 'paragraph',
+              content: [
+                {
+                  type: 'text',
+                  text: `${mentions} - Ticket approved and ready.`,
+                  marks: [{ type: 'strong' }]
+                }
+              ]
+            }] : [])
+          ]
+        }
+      };
+
+      await this.client.post(`/issue/${issueKey}/comment`, comment);
+      logger.info(`✅ Added approved notification comment to ${issueKey}`);
+    } catch (error) {
+      logger.error(`❌ Failed to add approved notification comment to ${issueKey}:`, error);
       throw error;
     }
   }
@@ -898,23 +957,22 @@ Automation System`;
             codeText.toLowerCase().includes('feature:') ||
             codeText.toLowerCase().includes('scenario:')) {
           
-          // Create collapsible section for Gherkin
+          // Create collapsible section for Gherkin using ADF expand node
           content.push({
-            type: 'paragraph',
-            content: [{
-              type: 'text',
-              text: '🧪 Acceptance Criteria (Click to expand)',
-              marks: [{ type: 'strong' }]
-            }]
-          });
-          
-          content.push({
-            type: 'codeBlock',
-            attrs: { language: 'gherkin' },
-            content: [{
-              type: 'text',
-              text: codeText
-            }]
+            type: 'expand',
+            attrs: {
+              title: '🧪 Acceptance Criteria'
+            },
+            content: [
+              {
+                type: 'codeBlock',
+                attrs: { language: 'gherkin' },
+                content: [{
+                  type: 'text',
+                  text: codeText
+                }]
+              }
+            ]
           });
         } else {
           // Regular code block
@@ -950,6 +1008,60 @@ Automation System`;
           }]
         });
         i++;
+        continue;
+      }
+      
+      // Handle tables (markdown format: | cell | cell |)
+      if (line.trim().startsWith('|') && line.trim().endsWith('|')) {
+        const tableRows: any[] = [];
+        let j = i;
+        let isHeader = true;
+        
+        // Collect all table rows
+        while (j < lines.length && lines[j].trim().startsWith('|') && lines[j].trim().endsWith('|')) {
+          const currentLine = lines[j].trim();
+          
+          // Skip separator row (|---|---|)
+          if (currentLine.match(/^\|[\s\-:|]+\|$/)) {
+            j++;
+            continue;
+          }
+          
+          // Parse cells
+          const cells = currentLine
+            .split('|')
+            .slice(1, -1) // Remove first and last empty elements
+            .map(cell => cell.trim());
+          
+          // Create table row
+          const rowCells = cells.map(cellText => ({
+            type: isHeader ? 'tableHeader' : 'tableCell',
+            content: [{
+              type: 'paragraph',
+              content: cellText ? [{
+                type: 'text',
+                text: cellText
+              }] : []
+            }]
+          }));
+          
+          tableRows.push({
+            type: 'tableRow',
+            content: rowCells
+          });
+          
+          isHeader = false;
+          j++;
+        }
+        
+        if (tableRows.length > 0) {
+          content.push({
+            type: 'table',
+            content: tableRows
+          });
+        }
+        
+        i = j;
         continue;
       }
       
