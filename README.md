@@ -738,14 +738,3 @@ The comprehensive documentation includes:
 4. Test thoroughly
 5. Submit a pull request
 
-## 📄 License
-
-MIT License - See LICENSE file for details
-
-## 👤 Author
-
-**Ardit @ 91.life**
-
----
-
-**Need more help?** Check out `COMPREHENSIVE_DOCUMENTATION.md` for detailed information about every aspect of the system.
