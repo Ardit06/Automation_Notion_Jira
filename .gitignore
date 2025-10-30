@@ -101,3 +101,5 @@ temp/
 
 # Optional REPL history
 .node_repl_history
+# Local internal docs (never commit)
+METHODS_REFERENCE.md
