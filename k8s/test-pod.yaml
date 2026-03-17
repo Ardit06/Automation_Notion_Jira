@@ -1,0 +1,44 @@
+# Test pod for verifying Docker image and cluster connectivity
+apiVersion: v1
+kind: Pod
+metadata:
+  name: notion-jira-test-pod
+  labels:
+    app: notion-jira-automation
+    test: "true"
+spec:
+  containers:
+    - name: test-container
+      image: us-central1-docker.pkg.dev/arhm-206818/notion-jira/notion-jira-automation:latest
+      imagePullPolicy: Always
+      env:
+        # Dummy values for testing - pod should start but won't connect to APIs
+        - name: NOTION_API_KEY
+          value: "test_notion_key"
+        - name: NOTION_USER_STORIES_DATABASE_ID
+          value: "test_db_id_12345678901234567890123456789012"
+        - name: NOTION_EPICS_DATABASE_ID
+          value: "test_db_id_09876543210987654321098765432109"
+        - name: NOTION_WEBHOOK_SECRET
+          value: "test_webhook_secret"
+        - name: JIRA_BASE_URL
+          value: "https://test.atlassian.net"
+        - name: JIRA_EMAIL
+          value: "test@example.com"
+        - name: JIRA_API_TOKEN
+          value: "test_jira_token"
+        - name: JIRA_PROJECT_KEY
+          value: "TEST"
+        - name: PORT
+          value: "3003"
+        - name: NODE_ENV
+          value: "development"
+      command: ["node", "dist/index.js"]
+  restartPolicy: Never
+
+---
+# To use this test pod:
+# 1. Apply: kubectl apply -f test-pod.yaml
+# 2. Check status: kubectl get pods
+# 3. View logs: kubectl logs notion-jira-test-pod
+# 4. Delete when done: kubectl delete pod notion-jira-test-pod

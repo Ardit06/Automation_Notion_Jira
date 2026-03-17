@@ -1,0 +1,132 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notion-jira-automation
+  labels:
+    app: notion-jira-automation
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notion-jira-automation
+  template:
+    metadata:
+      labels:
+        app: notion-jira-automation
+        version: v1
+    spec:
+      containers:
+        - name: notion-jira-automation
+          image: us-central1-docker.pkg.dev/arhm-206818/notion-jira/notion-jira-automation:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 3003
+              name: http
+              protocol: TCP
+          env:
+            # Notion Configuration
+            - name: NOTION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_API_KEY
+            - name: NOTION_USER_STORIES_DATABASE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_USER_STORIES_DATABASE_ID
+            - name: NOTION_EPICS_DATABASE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_EPICS_DATABASE_ID
+            - name: NOTION_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_WEBHOOK_SECRET
+            
+            # Jira Configuration
+            - name: JIRA_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_BASE_URL
+            - name: JIRA_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_EMAIL
+            - name: JIRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_API_TOKEN
+            - name: JIRA_PROJECT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_PROJECT_KEY
+            
+            # Server Configuration
+            - name: PORT
+              value: "3003"
+            - name: NODE_ENV
+              value: "production"
+            
+            # Optional: Scrum Master Emails (comma-separated)
+            - name: SCRUM_MASTER_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: SCRUM_MASTER_EMAILS
+                  optional: true
+            
+            # Optional: Status Change Comments
+            - name: ENABLE_STATUS_CHANGE_COMMENTS
+              value: "true"
+            
+            # Optional: Custom Field IDs (uncomment if needed)
+            # - name: JIRA_STORY_POINTS_FIELD_ID
+            #   value: "customfield_10016"
+            # - name: JIRA_FIGMA_LINK_FIELD_ID
+            #   value: "customfield_10021"
+            # - name: JIRA_EPIC_TYPE_FIELD_ID
+            #   value: "customfield_12224"
+            # - name: JIRA_EPIC_TYPE_VALUE
+            #   value: "11209"
+            # - name: JIRA_EPIC_LINK_FIELD_ID
+            #   value: "customfield_10011"
+            # - name: JIRA_DEV_START_DATE_FIELD_ID
+            #   value: "customfield_10020"
+            # - name: JIRA_DEV_END_DATE_FIELD_ID
+            #   value: "customfield_10022"
+          
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "100m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+          
+          livenessProbe:
+            httpGet:
+              path: /webhook/health
+              port: 3003
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /webhook/health
+              port: 3003
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      
+      restartPolicy: Always

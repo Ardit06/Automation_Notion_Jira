@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  notion-jira-automation:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: notion-jira-automation
+    ports:
+      - "3003:3003"
+    environment:
+      # Server Configuration
+      - NODE_ENV=production
+      - PORT=3003
+      
+      # Notion Configuration
+      - NOTION_API_KEY=${NOTION_API_KEY}
+      - NOTION_USER_STORIES_DATABASE_ID=${NOTION_USER_STORIES_DATABASE_ID}
+      - NOTION_EPICS_DATABASE_ID=${NOTION_EPICS_DATABASE_ID}
+      - NOTION_WEBHOOK_SECRET=${NOTION_WEBHOOK_SECRET}
+      
+      # Jira Configuration
+      - JIRA_BASE_URL=${JIRA_BASE_URL}
+      - JIRA_EMAIL=${JIRA_EMAIL}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      
+      # Custom Field IDs (Optional - uses defaults if not set)
+      - JIRA_STORY_POINTS_FIELD_ID=${JIRA_STORY_POINTS_FIELD_ID:-customfield_10016}
+      - JIRA_FIGMA_LINK_FIELD_ID=${JIRA_FIGMA_LINK_FIELD_ID:-customfield_10021}
+      - JIRA_EPIC_TYPE_FIELD_ID=${JIRA_EPIC_TYPE_FIELD_ID:-customfield_12224}
+      - JIRA_EPIC_TYPE_VALUE=${JIRA_EPIC_TYPE_VALUE:-11209}
+      
+      # Notifications
+      - SCRUM_MASTER_EMAILS=${SCRUM_MASTER_EMAILS}
+      - ENABLE_STATUS_CHANGE_COMMENTS=${ENABLE_STATUS_CHANGE_COMMENTS:-true}
+    
+    volumes:
+      # Mount logs directory for persistence
+      - ./logs:/app/logs
+    
+    # Restart policy for high availability
+    restart: unless-stopped
+    
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # Health check configuration
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3003/webhook/health', (res) => { if (res.statusCode !== 200) throw new Error(res.statusCode) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "3"
+        labels: "service=notion-jira-automation"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Network configuration
+    networks:
+      - automation-network
+
+networks:
+  automation-network:
+    driver: bridge

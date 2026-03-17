@@ -1,0 +1,105 @@
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables (CRITICAL - contains API keys)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.production
+.env.backup.*
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+tunnel.log
+localtunnel.log
+token-rotation.log
+
+# Runtime data
+pids
+*.pid
+*.seed
+*.pid.lock
+
+# Coverage directory used by tools like istanbul
+coverage/
+*.lcov
+
+# nyc test coverage
+.nyc_output
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Optional npm cache directory
+.npm
+
+# Optional eslint cache
+.eslintcache
+
+# Output of 'npm pack'
+*.tgz
+
+# Yarn Integrity file
+.yarn-integrity
+
+# Build output (compiled TypeScript)
+dist/
+
+# IDE and Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Security files (certificates, keys, etc.)
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Local development files
+local/
+dev/
+test-data/
+
+# Backup files
+*.backup
+*.bak
+*.tmp
+*.temp
+
+# Test files
+test-results/
+
+# Temporary folders
+tmp/
+temp/
+
+# Cache directories
+.cache
+.parcel-cache
+
+# Optional REPL history
+.node_repl_history
+# Local internal docs (never commit)
+METHODS_REFERENCE.md
