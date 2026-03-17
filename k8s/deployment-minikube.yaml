@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: notion-jira-automation
+  labels:
+    app: notion-jira-automation
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: notion-jira-automation
+  template:
+    metadata:
+      labels:
+        app: notion-jira-automation
+        version: v1
+    spec:
+      containers:
+        - name: notion-jira-automation
+          # For Minikube, use local image (no pull from registry)
+          image: notion-jira-automation:latest
+          imagePullPolicy: Never  # Important: Use local image, don't pull from registry
+          ports:
+            - containerPort: 3003
+              name: http
+              protocol: TCP
+          env:
+            # Notion Configuration
+            - name: NOTION_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_API_KEY
+            - name: NOTION_USER_STORIES_DATABASE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_USER_STORIES_DATABASE_ID
+            - name: NOTION_EPICS_DATABASE_ID
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_EPICS_DATABASE_ID
+            - name: NOTION_WEBHOOK_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: NOTION_WEBHOOK_SECRET
+            
+            # Jira Configuration
+            - name: JIRA_BASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_BASE_URL
+            - name: JIRA_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_EMAIL
+            - name: JIRA_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_API_TOKEN
+            - name: JIRA_PROJECT_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: JIRA_PROJECT_KEY
+            
+            # Server Configuration
+            - name: PORT
+              value: "3003"
+            - name: NODE_ENV
+              value: "development"
+            
+            # Optional: Scrum Master Emails
+            - name: SCRUM_MASTER_EMAILS
+              valueFrom:
+                secretKeyRef:
+                  name: notion-jira-secrets
+                  key: SCRUM_MASTER_EMAILS
+                  optional: true
+            
+            # Optional: Status Change Comments
+            - name: ENABLE_STATUS_CHANGE_COMMENTS
+              value: "true"
+          
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "50m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          
+          livenessProbe:
+            httpGet:
+              path: /webhook/health
+              port: 3003
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          
+          readinessProbe:
+            httpGet:
+              path: /webhook/health
+              port: 3003
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      
+      restartPolicy: Always

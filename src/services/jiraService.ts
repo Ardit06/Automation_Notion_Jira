@@ -32,22 +32,178 @@ export class JiraService {
       logger.info(`✅ Created Jira issue: ${response.data.key}`);
       return response.data;
     } catch (error: any) {
-      logger.error(`❌ Error creating Jira issue:`, error);
+      logger.error(`❌ Error creating Jira issue`);
+      logger.error(`   Status: ${error.response?.status} ${error.response?.statusText || ''}`);
       if (error.response?.data) {
-        logger.error(`   Response data:`, JSON.stringify(error.response.data, null, 2));
+        const errorData = error.response.data;
+        logger.error(`   Jira Error Details:`);
+        
+        // Log specific field errors
+        if (errorData.errors && Object.keys(errorData.errors).length > 0) {
+          logger.error(`   Field Errors:`);
+          Object.keys(errorData.errors).forEach(field => {
+            logger.error(`     - ${field}: ${errorData.errors[field]}`);
+          });
+        }
+        
+        // Log general error messages
+        if (errorData.errorMessages && Array.isArray(errorData.errorMessages) && errorData.errorMessages.length > 0) {
+          logger.error(`   Error Messages:`);
+          errorData.errorMessages.forEach((msg: string) => {
+            logger.error(`     - ${msg}`);
+          });
+        }
+        
+        // If no structured errors, log the whole response
+        if (!errorData.errors && !errorData.errorMessages) {
+          logger.error(`   Raw error: ${JSON.stringify(errorData)}`);
+        }
       }
       throw error;
     }
   }
 
-  async getIssue(issueKey: string): Promise<JiraIssue> {
+  /**
+   * Get create metadata for a project to see available issue types and fields
+   */
+  async getCreateMetadata(projectKey: string): Promise<any> {
     try {
-      const response = await this.client.get(`/issue/${issueKey}`);
+      const response = await this.client.get(`/issue/createmeta`, {
+        params: {
+          projectKeys: projectKey,
+          expand: 'projects.issuetypes.fields'
+        }
+      });
+      return response.data;
+    } catch (error: any) {
+      logger.error(`❌ Error fetching create metadata:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Discover custom field IDs by searching for fields by name
+   * This helps automatically find the correct field IDs for Dev Start Date and Dev End Date
+   */
+  async discoverCustomFieldIds(projectKey: string, issueType: string = 'Epic'): Promise<{
+    devStartDate?: string;
+    devEndDate?: string;
+    [key: string]: string | undefined;
+  }> {
+    try {
+      logger.info(`🔍 Discovering custom field IDs for project ${projectKey}, issue type ${issueType}`);
+      
+      const metadata = await this.getCreateMetadata(projectKey);
+      const discoveredFields: { [key: string]: string | undefined } = {};
+      
+      // Find the Epic issue type in the metadata
+      const project = metadata.projects?.[0];
+      if (!project) {
+        logger.warn(`⚠️ No project found in metadata`);
+        return discoveredFields;
+      }
+      
+      const epicIssueType = project.issuetypes?.find((it: any) => 
+        it.name?.toLowerCase() === issueType.toLowerCase()
+      );
+      
+      if (!epicIssueType) {
+        logger.warn(`⚠️ Issue type "${issueType}" not found in project metadata`);
+        return discoveredFields;
+      }
+      
+      const fields = epicIssueType.fields || {};
+      
+      // Search for Dev Start Date field
+      const devStartDateField = Object.entries(fields).find(([fieldId, fieldData]: [string, any]) => {
+        const fieldName = (fieldData as any)?.name?.toLowerCase() || '';
+        return fieldName.includes('dev start') || 
+               fieldName.includes('development start') ||
+               fieldName.includes('start date');
+      });
+      
+      if (devStartDateField) {
+        discoveredFields.devStartDate = devStartDateField[0];
+        const fieldData = devStartDateField[1] as any;
+        logger.info(`✅ Found Dev Start Date field: ${devStartDateField[0]} (${fieldData?.name || 'Unknown'})`);
+      } else {
+        logger.warn(`⚠️ Dev Start Date field not found in metadata`);
+      }
+      
+      // Search for Dev End Date field
+      const devEndDateField = Object.entries(fields).find(([fieldId, fieldData]: [string, any]) => {
+        const fieldName = (fieldData as any)?.name?.toLowerCase() || '';
+        return fieldName.includes('dev end') || 
+               fieldName.includes('development end') ||
+               fieldName.includes('end date');
+      });
+      
+      if (devEndDateField) {
+        discoveredFields.devEndDate = devEndDateField[0];
+        const fieldData = devEndDateField[1] as any;
+        logger.info(`✅ Found Dev End Date field: ${devEndDateField[0]} (${fieldData?.name || 'Unknown'})`);
+      } else {
+        logger.warn(`⚠️ Dev End Date field not found in metadata`);
+      }
+      
+      // Log all available date fields for debugging
+      const dateFields = Object.entries(fields).filter(([fieldId, fieldData]: [string, any]) => {
+        const field = fieldData as any;
+        return field?.schema?.type === 'date' || field?.schema?.type === 'datetime';
+      });
+      
+      if (dateFields.length > 0) {
+        logger.debug(`📅 Available date fields in ${issueType}:`);
+        dateFields.forEach(([fieldId, fieldData]: [string, any]) => {
+          const field = fieldData as any;
+          logger.debug(`   - ${fieldId}: ${field?.name || 'Unknown'} (${field?.schema?.type || 'Unknown'})`);
+        });
+      }
+      
+      return discoveredFields;
+    } catch (error: any) {
+      logger.error(`❌ Error discovering custom field IDs:`, error);
+      return {};
+    }
+  }
+
+  async getIssue(issueKey: string, fields?: string[], expand?: string[]): Promise<JiraIssue> {
+    try {
+      let url = `/issue/${issueKey}`;
+      const params: string[] = [];
+      
+      if (fields && fields.length > 0) {
+        params.push(`fields=${fields.join(',')}`);
+      }
+      
+      if (expand && expand.length > 0) {
+        params.push(`expand=${expand.join(',')}`);
+      }
+      
+      if (params.length > 0) {
+        url += `?${params.join('&')}`;
+      }
+      
+      logger.debug(`📋 Fetching Jira issue ${issueKey} with params: ${params.join('&') || 'none'}`);
+      const response = await this.client.get(url);
+      logger.debug(`✅ Successfully fetched issue ${issueKey}`);
       return response.data;
     } catch (error) {
       logger.error(`Error fetching Jira issue ${issueKey}:`, error);
       throw error;
     }
+  }
+
+  /**
+   * Get issue with detailed view (expanded fields)
+   * Common expand options: renderedFields, names, schema, transitions, changelog
+   */
+  async getIssueDetailed(issueKey: string, expandOptions?: string[]): Promise<JiraIssue> {
+    const defaultExpand = ['renderedFields', 'names', 'schema'];
+    const expand = expandOptions || defaultExpand;
+    
+    logger.debug(`📋 Fetching detailed view for issue ${issueKey} with expand: ${expand.join(',')}`);
+    return this.getIssue(issueKey, undefined, expand);
   }
 
   async updateIssue(issueKey: string, updateData: any): Promise<JiraIssue> {
@@ -64,12 +220,13 @@ export class JiraService {
 
   async searchIssues(jql: string): Promise<JiraIssue[]> {
     try {
-      const response = await this.client.post('/search', {
+      // Use the new search/jql endpoint instead of deprecated /search
+      const response = await this.client.post('/search/jql', {
         jql,
         fields: ['key', 'summary', 'description', 'issuetype', 'status'],
         maxResults: 100,
       });
-      return response.data.issues;
+      return response.data.values || response.data.issues || [];
     } catch (error) {
       logger.error('Error searching Jira issues:', error);
       throw error;
@@ -134,6 +291,61 @@ export class JiraService {
     }
   }
 
+  /**
+   * Convert date from various formats to Jira's expected format (YYYY-MM-DD)
+   * Handles formats like: MM/DD/YYYY, DD/MM/YYYY, YYYY-MM-DD, etc.
+   */
+  private normalizeDate(dateString: string | undefined): string | undefined {
+    if (!dateString) return undefined;
+    
+    // If already in YYYY-MM-DD format, return as is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
+    }
+    
+    // Handle MM/DD/YYYY format (common in US)
+    const mmddyyyy = dateString.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mmddyyyy) {
+      const [, month, day, year] = mmddyyyy;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    
+    // Handle DD/MM/YYYY format (common in EU)
+    const ddmmyyyy = dateString.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (ddmmyyyy) {
+      const [, day, month, year] = ddmmyyyy;
+      // Try to detect which is which - if first part > 12, it's likely DD/MM
+      const firstPart = parseInt(ddmmyyyy[1]);
+      const secondPart = parseInt(ddmmyyyy[2]);
+      if (firstPart > 12 && secondPart <= 12) {
+        // Definitely DD/MM/YYYY
+        return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+      } else if (secondPart > 12 && firstPart <= 12) {
+        // Definitely MM/DD/YYYY
+        return `${year}-${firstPart.toString().padStart(2, '0')}-${secondPart.toString().padStart(2, '0')}`;
+      }
+      // Ambiguous - assume MM/DD/YYYY (US format)
+      return `${year}-${firstPart.toString().padStart(2, '0')}-${secondPart.toString().padStart(2, '0')}`;
+    }
+    
+    // Try to parse as ISO date string
+    try {
+      const date = new Date(dateString);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+    } catch (error) {
+      logger.warn(`⚠️ Could not parse date: ${dateString}`);
+    }
+    
+    // Return as-is if we can't parse it (might already be in correct format)
+    logger.warn(`⚠️ Date format not recognized, using as-is: ${dateString}`);
+    return dateString;
+  }
+
   async createEpic(
     title: string, 
     description?: string, 
@@ -142,10 +354,20 @@ export class JiraService {
     notionUrl?: string,
     startDate?: string,
     endDate?: string,
-    figmaLink?: string
+    figmaLink?: string,
+    devStartDate?: string,
+    devEndDate?: string,
+    owner?: string,
+    roadmap?: string,
+    vertical?: string
   ): Promise<JiraIssue> {
     // Create ADF format description for Epics: include Notion link + full content
-    let fullDescription = this.createDescriptionADF(description, notionUrl, true, figmaLink);
+    let fullDescription = this.createDescriptionADF(description, notionUrl, true, figmaLink, owner, roadmap, vertical);
+
+    // Normalize dates to YYYY-MM-DD format
+    const normalizedDueDate = this.normalizeDate(dueDate);
+    const normalizedDevStartDate = this.normalizeDate(devStartDate);
+    const normalizedDevEndDate = this.normalizeDate(devEndDate);
 
     const issueData: JiraCreateIssueRequest = {
       fields: {
@@ -171,37 +393,122 @@ export class JiraService {
     // and cannot be changed during issue creation
 
     // Add due date if provided
-    if (dueDate) {
-      issueData.fields.duedate = dueDate;
+    if (normalizedDueDate) {
+      issueData.fields.duedate = normalizedDueDate;
     }
 
-    // Add start and end dates to description since custom fields aren't available
-    if (startDate || endDate) {
-      let dateInfo = '\n\nEpic Timeline:';
-      if (startDate) {
-        dateInfo += `\n• Start Date: ${startDate}`;
+    // Try to discover custom field IDs if not configured
+    let devStartDateFieldId = JIRA_CUSTOM_FIELDS.DEV_START_DATE;
+    let devEndDateFieldId = JIRA_CUSTOM_FIELDS.DEV_END_DATE;
+    
+    // If using default field IDs, try to discover the correct ones
+    if (devStartDateFieldId === 'customfield_10020' || devEndDateFieldId === 'customfield_10022') {
+      try {
+        const discoveredFields = await this.discoverCustomFieldIds(config.jira.projectKey, 'Epic');
+        if (discoveredFields.devStartDate) {
+          devStartDateFieldId = discoveredFields.devStartDate;
+          logger.info(`✅ Using discovered Dev Start Date field: ${devStartDateFieldId}`);
+        }
+        if (discoveredFields.devEndDate) {
+          devEndDateFieldId = discoveredFields.devEndDate;
+          logger.info(`✅ Using discovered Dev End Date field: ${devEndDateFieldId}`);
+        }
+      } catch (error) {
+        logger.warn(`⚠️ Could not discover custom field IDs, using configured defaults`);
       }
-      if (endDate) {
-        dateInfo += `\n• End Date: ${endDate}`;
-      }
-      fullDescription += dateInfo;
     }
+
+    // Add Dev Start Date and Dev End Date as custom fields (for timeline)
+    // These map from Notion "Start date" and "End Date" to Jira "Dev Start Date" and "Dev End Date"
+    if (normalizedDevStartDate) {
+      issueData.fields[devStartDateFieldId] = normalizedDevStartDate;
+      logger.debug(`Adding Dev Start Date: ${devStartDateFieldId} = ${normalizedDevStartDate}`);
+      // Note: Dates are added to custom fields, not to description (description is ADF format)
+    }
+
+    if (normalizedDevEndDate) {
+      issueData.fields[devEndDateFieldId] = normalizedDevEndDate;
+      logger.debug(`Adding Dev End Date: ${devEndDateFieldId} = ${normalizedDevEndDate}`);
+      // Note: Dates are added to custom fields, not to description (description is ADF format)
+    }
+
+    // Note: Start and end dates are added to custom fields (devStartDate/devEndDate)
+    // If custom fields aren't available, they won't be added to description
+    // (Description is ADF format and can't have strings concatenated to it)
 
     // Add priority if provided
     if (priority) {
-      issueData.fields.priority = {
-        name: this.mapPriorityToJira(priority)
-      };
+      try {
+        const jiraPriority = this.mapPriorityToJira(priority);
+        issueData.fields.priority = {
+          name: jiraPriority
+        };
+        logger.info(`⚡ Setting Epic priority: "${priority}" → "${jiraPriority}"`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not set Epic priority "${priority}": ${error.message}`);
+        // Continue without priority - issue will be created with default priority
+      }
     }
 
-    // Add Figma link if provided
-    if (figmaLink) {
-      // Add Figma link to custom field
-      issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink;
-      logger.info(`🎨 Figma link added to Epic: ${figmaLink}`);
+    // Add Figma link to custom field if provided (in addition to description)
+    if (figmaLink && figmaLink.trim()) {
+      try {
+        issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink.trim();
+        logger.info(`🎨 Adding Figma link to custom field during Epic creation: ${figmaLink}`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not add Figma link to custom field during Epic creation: ${error.message}`);
+        // Continue - Figma link is still in the description
+      }
     }
 
-    return this.createIssue(issueData);
+    // Note: owner, roadmap, and vertical are already included in the description
+    // via createDescriptionADF (called on line 365), so no need to add them again here
+
+    try {
+      return await this.createIssue(issueData);
+    } catch (error: any) {
+      // Log error details for debugging
+      logger.warn(`⚠️ Epic creation failed: ${error.message}`);
+      if (error.response?.data?.errors) {
+        logger.warn(`⚠️ Jira API errors: ${JSON.stringify(error.response.data.errors)}`);
+      }
+      
+      // If creation failed because of Priority or Figma Link field, try without them
+      const hasPriorityError = priority && issueData.fields.priority && 
+          error.response?.data?.errors?.priority;
+      const hasFigmaLinkError = figmaLink && issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] && 
+          error.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.FIGMA_LINK];
+      
+      if (hasPriorityError || hasFigmaLinkError) {
+        if (hasPriorityError) {
+          logger.warn(`⚠️ Priority field rejected by Jira, retrying without it`);
+          delete issueData.fields.priority;
+        }
+        if (hasFigmaLinkError) {
+          logger.warn(`⚠️ Figma Link field not available during creation, retrying without it`);
+          delete issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK];
+        }
+        
+        // Try creating again, with another retry for priority if needed
+        try {
+          return await this.createIssue(issueData);
+        } catch (retryError: any) {
+          // If retry also failed, check for priority error
+          const hasPriorityErrorOnRetry = priority && issueData.fields.priority && 
+              retryError.response?.data?.errors?.priority;
+          
+          if (hasPriorityErrorOnRetry) {
+            logger.warn(`⚠️ Priority field rejected on retry, removing it and trying again`);
+            delete issueData.fields.priority;
+            return await this.createIssue(issueData);
+          } else {
+            throw retryError; // Re-throw if it's a different error
+          }
+        }
+      } else {
+        throw error; // Re-throw if it's a different error
+      }
+    }
   }
 
   async createStory(
@@ -236,16 +543,23 @@ export class JiraService {
     // Note: Reporter field is automatically set to the authenticated user (API token owner)
     // and cannot be changed during issue creation
 
-    // Add story points if provided
-    if (storyPoints) {
-      issueData.fields[JIRA_CUSTOM_FIELDS.STORY_POINTS] = storyPoints;
-    }
-
-    // Add epic link if provided
+    // Try to set Epic Link during creation if provided
+    // Some Jira instances allow this field during creation, others require it to be set via update
     if (epicKey) {
-      issueData.fields.parent = {
-        key: epicKey,
-      };
+      try {
+        // Verify epic exists and is actually an Epic issue type before attempting to link
+        const epic = await this.getIssue(epicKey, ['issuetype']);
+        if (epic.fields.issuetype?.name?.toLowerCase() === 'epic') {
+          // Try to set Epic Link during creation
+          issueData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK] = epicKey;
+          logger.debug(`Attempting to set Epic Link during creation: ${epicKey}`);
+        } else {
+          logger.warn(`⚠️ Issue ${epicKey} is not an Epic (type: ${epic.fields.issuetype?.name}), will skip epic linking`);
+        }
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not verify epic ${epicKey} before creation, will try to link after creation: ${error.message}`);
+        // Don't set epic link during creation if we can't verify the epic
+      }
     }
 
     // Add due date if provided
@@ -255,19 +569,211 @@ export class JiraService {
 
     // Add priority if provided
     if (priority) {
-      issueData.fields.priority = {
-        name: this.mapPriorityToJira(priority)
-      };
+      try {
+        const jiraPriority = this.mapPriorityToJira(priority);
+        issueData.fields.priority = {
+          name: jiraPriority
+        };
+        logger.info(`⚡ Setting Story priority: "${priority}" → "${jiraPriority}"`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not set Story priority "${priority}": ${error.message}`);
+        // Continue without priority - issue will be created with default priority
+      }
     }
 
-    // Add Figma link if provided
-    if (figmaLink) {
-      // Add Figma link to custom field
-      issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink;
-      logger.info(`🎨 Figma link added: ${figmaLink}`);
+    // Add Figma link to custom field if provided (in addition to description)
+    if (figmaLink && figmaLink.trim()) {
+      try {
+        issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = figmaLink.trim();
+        logger.info(`🎨 Adding Figma link to custom field during creation: ${figmaLink}`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not add Figma link to custom field during creation: ${error.message}`);
+        // Continue - Figma link is still in the description
+      }
     }
 
-    return this.createIssue(issueData);
+    // Create the story first
+    let createdIssue: JiraIssue;
+    let epicLinkSetDuringCreation = false;
+    
+    try {
+      createdIssue = await this.createIssue(issueData);
+      logger.info(`✅ Story ${createdIssue.key} created successfully`);
+      
+      // Check if Epic Link was set during creation
+      if (epicKey && issueData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK]) {
+        epicLinkSetDuringCreation = true;
+        logger.info(`✅ Epic Link set during creation: ${epicKey}`);
+      }
+    } catch (error: any) {
+      // Log error details for debugging
+      logger.warn(`⚠️ Story creation failed: ${error.message}`);
+      if (error.response?.data?.errors) {
+        logger.warn(`⚠️ Jira API errors: ${JSON.stringify(error.response.data.errors)}`);
+      }
+      
+      // If creation failed because of Epic Link, Figma Link, or Priority field, try without them
+      const hasEpicLinkError = epicKey && issueData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK] && 
+          error.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+      const hasFigmaLinkError = figmaLink && issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] && 
+          error.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.FIGMA_LINK];
+      const hasPriorityError = priority && issueData.fields.priority && 
+          error.response?.data?.errors?.priority;
+      
+      logger.info(`🔍 Error detection: EpicLink=${!!hasEpicLinkError}, FigmaLink=${!!hasFigmaLinkError}, Priority=${!!hasPriorityError}`);
+      
+      if (hasEpicLinkError || hasFigmaLinkError || hasPriorityError) {
+        // Remove problematic fields
+        if (hasEpicLinkError) {
+          logger.warn(`⚠️ Epic Link field not available during creation, retrying without it`);
+          delete issueData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+        }
+        if (hasFigmaLinkError) {
+          logger.warn(`⚠️ Figma Link field not available during creation, retrying without it`);
+          delete issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK];
+        }
+        if (hasPriorityError) {
+          logger.warn(`⚠️ Priority field rejected by Jira, retrying without it`);
+          delete issueData.fields.priority;
+        }
+        
+        // Try creating again, with another retry for priority if needed
+        try {
+          createdIssue = await this.createIssue(issueData);
+          logger.info(`✅ Story ${createdIssue.key} created successfully (without problematic fields)`);
+        } catch (retryError: any) {
+          // If retry also failed, check for priority error (common case)
+          const hasPriorityErrorOnRetry = priority && issueData.fields.priority && 
+              retryError.response?.data?.errors?.priority;
+          
+          if (hasPriorityErrorOnRetry) {
+            logger.warn(`⚠️ Priority field rejected on retry, removing it and trying again`);
+            delete issueData.fields.priority;
+            createdIssue = await this.createIssue(issueData);
+            logger.info(`✅ Story ${createdIssue.key} created successfully (without priority)`);
+          } else {
+            throw retryError; // Re-throw if it's a different error
+          }
+        }
+      } else {
+        throw error; // Re-throw if it's a different error
+      }
+    }
+
+    // After creation, try to set the optional fields (story points, figma link, and epic link if not set during creation)
+    // These are done as separate update operations since they may not be available during creation
+
+    // Set story points if provided
+    if (storyPoints) {
+      try {
+        await this.updateIssue(createdIssue.key, {
+          fields: {
+            [JIRA_CUSTOM_FIELDS.STORY_POINTS]: storyPoints,
+          },
+        });
+        logger.info(`✅ Set story points to ${storyPoints} for story ${createdIssue.key}`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not set story points for ${createdIssue.key}: ${error.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.STORY_POINTS] || error.message}`);
+        logger.warn(`   Story created successfully, but story points field may not be available for this issue type`);
+      }
+    }
+
+    // Set Figma link in custom field if provided (if it wasn't set during creation)
+    if (figmaLink && figmaLink.trim() && !issueData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK]) {
+      try {
+        await this.updateIssue(createdIssue.key, {
+          fields: {
+            [JIRA_CUSTOM_FIELDS.FIGMA_LINK]: figmaLink.trim(),
+          },
+        });
+        logger.info(`✅ Set Figma link in custom field for story ${createdIssue.key}: ${figmaLink}`);
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not set Figma link in custom field for ${createdIssue.key}: ${error.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.FIGMA_LINK] || error.message}`);
+        logger.warn(`   Story created successfully, but Figma link field may not be available for this issue type`);
+        // Continue - Figma link is still in the description
+      }
+    }
+
+    // If epicKey is provided and wasn't set during creation, try to set it via update
+    // Note: Stories are linked to Epics using the Epic Link custom field, not the parent field
+    if (epicKey && !epicLinkSetDuringCreation) {
+      try {
+        // Verify epic exists and is actually an Epic issue type
+        const epic = await this.getIssue(epicKey, ['issuetype']);
+        if (epic.fields.issuetype?.name?.toLowerCase() !== 'epic') {
+          logger.warn(`⚠️ Issue ${epicKey} is not an Epic (type: ${epic.fields.issuetype?.name}), cannot link story`);
+        } else {
+          // Try multiple methods to link the story to the epic
+          let linked = false;
+          let lastError: any = null;
+          
+          // Method 1: Try using Epic Link custom field via update
+          try {
+            await this.updateIssue(createdIssue.key, {
+              fields: {
+                [JIRA_CUSTOM_FIELDS.EPIC_LINK]: epicKey,
+              },
+            });
+            logger.info(`✅ Linked story ${createdIssue.key} to epic ${epicKey} via Epic Link field`);
+            linked = true;
+          } catch (updateError: any) {
+            // If update fails, try alternative methods
+            lastError = updateError;
+            logger.debug(`⚠️ Epic Link field update failed, trying alternative methods: ${updateError.message}`);
+            
+            // Method 2: Try using parent field (some Jira instances use this)
+            try {
+              await this.updateIssue(createdIssue.key, {
+                fields: {
+                  parent: {
+                    key: epicKey,
+                  },
+                },
+              });
+              logger.info(`✅ Linked story ${createdIssue.key} to epic ${epicKey} via parent field`);
+              linked = true;
+            } catch (parentError: any) {
+              lastError = parentError;
+              logger.debug(`⚠️ Parent field update also failed: ${parentError.message}`);
+              
+              // Method 3: Try using issue links API to create a "relates to" or "epic link" relationship
+              try {
+                // Use the issue links API to create a link
+                await this.client.post(`/rest/api/3/issue/${createdIssue.key}/remotelink`, {
+                  globalId: `epic-link-${epicKey}-${createdIssue.key}`,
+                  object: {
+                    url: `${config.jira.baseUrl}/browse/${epicKey}`,
+                    title: `Epic: ${epicKey}`,
+                  },
+                  relationship: 'Epic Link',
+                });
+                logger.info(`✅ Linked story ${createdIssue.key} to epic ${epicKey} via issue links API`);
+                linked = true;
+              } catch (linkError: any) {
+                lastError = linkError;
+                logger.debug(`⚠️ Issue links API also failed: ${linkError.message}`);
+              }
+            }
+          }
+          
+          if (!linked) {
+            // If all methods failed, log a warning
+            const errorMessage = lastError?.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.EPIC_LINK] || 
+                                lastError?.response?.data?.errors?.customfield_10011 ||
+                                lastError?.message || 'All linking methods failed';
+            logger.warn(`⚠️ Story ${createdIssue.key} created but epic link could not be set: ${errorMessage}`);
+            logger.warn(`   💡 The Epic Link field may not be available for updates on this Jira instance`);
+            logger.warn(`   💡 You may need to manually link the story to the epic in Jira`);
+            // Don't throw - story was created successfully, just without epic link
+          }
+        }
+      } catch (error: any) {
+        logger.warn(`⚠️ Could not verify epic ${epicKey} or link story: ${error.message}`);
+        logger.warn(`   Story ${createdIssue.key} created successfully, but epic link could not be set`);
+      }
+    }
+
+    return createdIssue;
   }
 
   async createTask(
@@ -365,37 +871,37 @@ export class JiraService {
 
   async reopenIssue(jiraKey: string, issueTitle: string): Promise<boolean> {
     try {
-      // Add a comment explaining the reopening
-      const commentText = `🔄 **Issue Reopened - Back to Ready For Dev**
-
-This issue "${issueTitle}" has been reopened because the status in Notion changed back to "Ready For Dev".
-
-The item is now ready for development again.
-
----
-*Automated by Notion-Jira Integration*`;
-
-      const commentData = {
-        body: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: commentText,
-                  marks: []
-                }
-              ]
-            }
-          ]
-        }
-      };
-
-      await this.client.post(`/issue/${jiraKey}/comment`, commentData);
-      logger.info(`✅ Reopening comment added to ${jiraKey}`);
+      // Comments disabled - fully automatic workflow
+      // const commentText = `🔄 **Issue Reopened - Back to Ready For Dev**
+      //
+      // This issue "${issueTitle}" has been reopened because the status in Notion changed back to "Ready For Dev".
+      //
+      // The item is now ready for development again.
+      //
+      // ---
+      // *Automated by Notion-Jira Integration*`;
+      //
+      // const commentData = {
+      //   body: {
+      //     type: 'doc',
+      //     version: 1,
+      //     content: [
+      //       {
+      //         type: 'paragraph',
+      //         content: [
+      //           {
+      //             type: 'text',
+      //             text: commentText,
+      //             marks: []
+      //           }
+      //         ]
+      //       }
+      //     ]
+      //   }
+      // };
+      //
+      // await this.client.post(`/issue/${jiraKey}/comment`, commentData);
+      // logger.info(`✅ Reopening comment added to ${jiraKey}`);
 
       // Reopen the issue (transition to "To Do" or "Open")
       const transitionData = {
@@ -419,39 +925,39 @@ The item is now ready for development again.
     issueTitle: string
   ): Promise<boolean> {
     try {
-      // First, add a comment explaining why the issue is being resolved
-      const commentText = `🔒 **Issue Resolved - Status Change**
-
-This issue "${issueTitle}" has been resolved because the status in Notion changed from "Ready For Dev" to "${newStatus}".
-
-This indicates that changes or additional work are needed before this item can be considered ready for development again.
-
-The issue will be automatically reopened if the status returns to "Ready For Dev".
-
----
-*Automated by Notion-Jira Integration*`;
-
-      const commentData = {
-        body: {
-          type: 'doc',
-          version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [
-                {
-                  type: 'text',
-                  text: commentText,
-                  marks: []
-                }
-              ]
-            }
-          ]
-        }
-      };
-
-      await this.client.post(`/issue/${jiraKey}/comment`, commentData);
-      logger.info(`✅ Resolution comment added to ${jiraKey}`);
+      // Comments disabled - fully automatic workflow
+      // const commentText = `🔒 **Issue Resolved - Status Change**
+      //
+      // This issue "${issueTitle}" has been resolved because the status in Notion changed from "Ready For Dev" to "${newStatus}".
+      //
+      // This indicates that changes or additional work are needed before this item can be considered ready for development again.
+      //
+      // The issue will be automatically reopened if the status returns to "Ready For Dev".
+      //
+      // ---
+      // *Automated by Notion-Jira Integration*`;
+      //
+      // const commentData = {
+      //   body: {
+      //     type: 'doc',
+      //     version: 1,
+      //     content: [
+      //       {
+      //         type: 'paragraph',
+      //         content: [
+      //           {
+      //             type: 'text',
+      //             text: commentText,
+      //             marks: []
+      //           }
+      //         ]
+      //       }
+      //     ]
+      //   }
+      // };
+      //
+      // await this.client.post(`/issue/${jiraKey}/comment`, commentData);
+      // logger.info(`✅ Resolution comment added to ${jiraKey}`);
 
       // Now resolve the issue
       const transitionData = {
@@ -786,7 +1292,8 @@ The development team can now work on this item. Please review and let us know if
 
   async addNotionCreationComment(jiraKey: string, issueTitle: string): Promise<boolean> {
     try {
-      logger.info(`💬 Adding Notion creation comment to: ${jiraKey}`);
+      // Logging disabled - comments are not being used in automation
+      // logger.info(`💬 Adding Notion creation comment to: ${jiraKey}`);
 
       const creationComment = `📝 **Created from Notion**
 
@@ -837,14 +1344,24 @@ Automation System`;
   }
 
   private mapPriorityToJira(notionPriority: string): string {
+    // Direct 1:1 mapping - Notion priority values map directly to Jira priority values
     const priorityMap: { [key: string]: string } = {
-      'High': 'Highest',
-      'Medium': 'High', 
-      'Low': 'Medium',
-      'Critical': 'Critical'
+      'High': 'High',
+      'Medium': 'Medium', 
+      'Low': 'Low',
+      'Critical': 'Critical',
+      'Highest': 'Highest',  // Support for Highest if used in Notion
+      'Lowest': 'Lowest'     // Support for Lowest if used in Notion
     };
     
-    return priorityMap[notionPriority] || 'Medium';
+    // Return mapped priority or default to Medium if not found
+    const mappedPriority = priorityMap[notionPriority];
+    if (!mappedPriority) {
+      logger.warn(`⚠️ Unknown priority value "${notionPriority}", defaulting to "Medium"`);
+      return 'Medium';
+    }
+    
+    return mappedPriority;
   }
 
   private convertToADF(text: string): any {
@@ -865,6 +1382,112 @@ Automation System`;
     };
   }
 
+  /**
+   * Parses inline markdown formatting (bold, italic, strikethrough, code, links) and converts to ADF text nodes
+   */
+  private parseInlineMarkdown(text: string): any[] {
+    if (!text) return [];
+    
+    const nodes: any[] = [];
+    let currentIndex = 0;
+    
+    // Regex patterns for different markdown formats
+    const patterns = [
+      { regex: /\[([^\]]+)\]\(([^)]+)\)/g, type: 'link' }, // Links [text](url)
+      { regex: /`([^`]+)`/g, type: 'code' }, // Inline code `code`
+      { regex: /\*\*([^*]+)\*\*/g, type: 'bold' }, // Bold **text**
+      { regex: /~~([^~]+)~~/g, type: 'strikethrough' }, // Strikethrough ~~text~~
+      { regex: /\*([^*]+)\*/g, type: 'italic' }, // Italic *text*
+    ];
+    
+    // Find all matches with their positions
+    const matches: Array<{ start: number; end: number; type: string; content: string; url?: string }> = [];
+    
+    for (const pattern of patterns) {
+      let match;
+      while ((match = pattern.regex.exec(text)) !== null) {
+        matches.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          type: pattern.type,
+          content: match[1],
+          url: pattern.type === 'link' ? match[2] : undefined
+        });
+      }
+    }
+    
+    // Sort matches by position
+    matches.sort((a, b) => a.start - b.start);
+    
+    // Remove overlapping matches (keep first match)
+    const filteredMatches: typeof matches = [];
+    for (const match of matches) {
+      const overlaps = filteredMatches.some(m => 
+        (match.start >= m.start && match.start < m.end) ||
+        (match.end > m.start && match.end <= m.end)
+      );
+      if (!overlaps) {
+        filteredMatches.push(match);
+      }
+    }
+    
+    // Build nodes from matches
+    for (const match of filteredMatches) {
+      // Add text before match
+      if (match.start > currentIndex) {
+        const beforeText = text.substring(currentIndex, match.start);
+        if (beforeText) {
+          nodes.push({ type: 'text', text: beforeText });
+        }
+      }
+      
+      // Add formatted node
+      const marks: any[] = [];
+      if (match.type === 'bold') {
+        marks.push({ type: 'strong' });
+      } else if (match.type === 'italic') {
+        marks.push({ type: 'em' });
+      } else if (match.type === 'strikethrough') {
+        marks.push({ type: 'strike' });
+      } else if (match.type === 'code') {
+        marks.push({ type: 'code' });
+      }
+      
+      if (match.type === 'link') {
+        // For links, combine other marks with link mark
+        const linkMarks = [...marks, { type: 'link', attrs: { href: match.url } }];
+        nodes.push({
+          type: 'text',
+          text: match.content,
+          marks: linkMarks
+        });
+      } else {
+        nodes.push({
+          type: 'text',
+          text: match.content,
+          marks: marks
+        });
+      }
+      
+      currentIndex = match.end;
+    }
+    
+    // Add remaining text
+    if (currentIndex < text.length) {
+      const remainingText = text.substring(currentIndex);
+      if (remainingText) {
+        nodes.push({ type: 'text', text: remainingText });
+      }
+    }
+    
+    // If no matches found, return plain text
+    if (nodes.length === 0 && text) {
+      return [{ type: 'text', text: text }];
+    }
+    
+    return nodes;
+  }
+
   public convertMarkdownToADF(markdown: string): any {
     const lines = markdown.split('\n');
     const content: any[] = [];
@@ -883,32 +1506,16 @@ Automation System`;
         continue;
       }
       
-      // Handle bold text (**text**)
-      if (line.includes('**')) {
-        const parts = line.split(/(\*\*[^*]+\*\*)/g);
-        const paragraphContent: any[] = [];
-        
-        for (const part of parts) {
-          if (part.startsWith('**') && part.endsWith('**')) {
-            // Bold text
-            const boldText = part.slice(2, -2);
-            paragraphContent.push({
-              type: 'text',
-              text: boldText,
-              marks: [{ type: 'strong' }]
-            });
-          } else if (part.trim()) {
-            // Regular text
-            paragraphContent.push({
-              type: 'text',
-              text: part
-            });
-          }
-        }
-        
+      // Handle blockquotes (> text)
+      if (line.startsWith('> ')) {
+        const quoteText = line.slice(2);
+        const quoteContent = this.parseInlineMarkdown(quoteText);
         content.push({
-          type: 'paragraph',
-          content: paragraphContent
+          type: 'blockquote',
+          content: [{
+            type: 'paragraph',
+            content: quoteContent
+          }]
         });
         i++;
         continue;
@@ -918,14 +1525,12 @@ Automation System`;
       if (line.startsWith('#')) {
         const level = line.match(/^#+/)?.[0].length || 1;
         const text = line.replace(/^#+\s*/, '');
+        const headingContent = this.parseInlineMarkdown(text);
         
         content.push({
           type: 'heading',
           attrs: { level: Math.min(level, 6) },
-          content: [{
-            type: 'text',
-            text: text
-          }]
+          content: headingContent.length > 0 ? headingContent : [{ type: 'text', text: text }]
         });
         i++;
         continue;
@@ -992,18 +1597,53 @@ Automation System`;
       }
       
       // Handle lists (- item)
-      if (line.startsWith('- ')) {
+      if (line.startsWith('- ') || line.startsWith('• ')) {
         const text = line.slice(2);
+        const listContent = this.parseInlineMarkdown(text);
         content.push({
           type: 'bulletList',
           content: [{
             type: 'listItem',
             content: [{
               type: 'paragraph',
-              content: [{
-                type: 'text',
-                text: text
-              }]
+              content: listContent.length > 0 ? listContent : [{ type: 'text', text: text }]
+            }]
+          }]
+        });
+        i++;
+        continue;
+      }
+      
+      // Handle numbered lists (1. item)
+      if (/^\d+\.\s/.test(line)) {
+        const text = line.replace(/^\d+\.\s/, '');
+        const listContent = this.parseInlineMarkdown(text);
+        content.push({
+          type: 'orderedList',
+          content: [{
+            type: 'listItem',
+            content: [{
+              type: 'paragraph',
+              content: listContent.length > 0 ? listContent : [{ type: 'text', text: text }]
+            }]
+          }]
+        });
+        i++;
+        continue;
+      }
+      
+      // Handle checkboxes (☑ or ☐)
+      if (line.startsWith('☑ ') || line.startsWith('☐ ')) {
+        const text = line.slice(2);
+        const checkboxContent = this.parseInlineMarkdown(text);
+        content.push({
+          type: 'taskList',
+          content: [{
+            type: 'taskItem',
+            attrs: { localId: `task-${i}`, state: line.startsWith('☑') ? 'DONE' : 'TODO' },
+            content: [{
+              type: 'paragraph',
+              content: checkboxContent.length > 0 ? checkboxContent : [{ type: 'text', text: text }]
             }]
           }]
         });
@@ -1065,13 +1705,11 @@ Automation System`;
         continue;
       }
       
-      // Regular paragraph
+      // Regular paragraph - parse inline markdown
+      const paragraphContent = this.parseInlineMarkdown(line);
       content.push({
         type: 'paragraph',
-        content: [{
-          type: 'text',
-          text: line
-        }]
+        content: paragraphContent.length > 0 ? paragraphContent : [{ type: 'text', text: line }]
       });
       i++;
     }
@@ -1083,7 +1721,15 @@ Automation System`;
     };
   }
 
-  public createDescriptionADF(description?: string, notionUrl?: string, includeDescription: boolean = false, figmaLink?: string): any {
+  public createDescriptionADF(
+    description?: string, 
+    notionUrl?: string, 
+    includeDescription: boolean = false, 
+    figmaLink?: string,
+    owner?: string,
+    roadmap?: string,
+    vertical?: string
+  ): any {
     const content: any[] = [];
     
     // Always add a Notion link block if provided
@@ -1135,7 +1781,8 @@ Automation System`;
     }
 
     // Add Figma link if provided
-    if (figmaLink) {
+    if (figmaLink && figmaLink.trim()) {
+      logger.info(`🎨 Adding Figma link to Jira description: ${figmaLink}`);
       // Add separator before Figma link
       content.push({
         type: 'paragraph',
@@ -1151,10 +1798,64 @@ Automation System`;
           {
             type: 'text',
             text: 'View in Figma',
-            marks: [{ type: 'link', attrs: { href: figmaLink } }]
+            marks: [{ type: 'link', attrs: { href: figmaLink.trim() } }]
           }
         ]
       });
+    } else if (figmaLink !== undefined) {
+      logger.debug(`⚠️ Figma link provided but empty or whitespace: "${figmaLink}"`);
+    }
+
+    // Add additional metadata if provided (Owner, Roadmap, Vertical)
+    if (owner || roadmap || vertical) {
+      // Add separator
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '—', marks: [] }
+        ]
+      });
+
+      // Add metadata header
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: 'Additional Information:', marks: [{ type: 'strong' }] }
+        ]
+      });
+
+      // Add owner if provided
+      if (owner) {
+        content.push({
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: '• Owner: ', marks: [] },
+            { type: 'text', text: owner, marks: [] }
+          ]
+        });
+      }
+
+      // Add roadmap if provided
+      if (roadmap) {
+        content.push({
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: '• Roadmap: ', marks: [] },
+            { type: 'text', text: roadmap, marks: [] }
+          ]
+        });
+      }
+
+      // Add vertical if provided
+      if (vertical) {
+        content.push({
+          type: 'paragraph',
+          content: [
+            { type: 'text', text: '• Vertical: ', marks: [] },
+            { type: 'text', text: vertical, marks: [] }
+          ]
+        });
+      }
     }
     
     return { type: 'doc', version: 1, content };

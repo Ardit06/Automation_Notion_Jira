@@ -103,6 +103,8 @@ export interface Config {
   };
   security: {
     authorizedUsers: string[];
+    /** Dev only: skip Notion webhook signature verification when true */
+    allowUnsignedWebhooks: boolean;
   };
   notifications: {
     scrumMasterEmails: string[];

@@ -9,7 +9,8 @@ WORKDIR /build
 COPY package*.json ./
 
 # Install all dependencies (including devDependencies for build)
-RUN npm ci
+# Use --ignore-scripts to skip optional dependencies like phantomjs that may fail on ARM64
+RUN npm ci --ignore-scripts || npm install --ignore-scripts
 
 # Copy source code
 COPY . .

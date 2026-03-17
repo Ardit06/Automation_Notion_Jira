@@ -23,6 +23,9 @@ export const config: Config = {
   },
   security: {
     authorizedUsers: (process.env.AUTHORIZED_USERS || '').split(',').map(u => u.trim()),
+    allowUnsignedWebhooks:
+      (process.env.NODE_ENV || 'development') !== 'production' &&
+      process.env.ALLOW_UNSIGNED_WEBHOOKS === 'true',
   },
   notifications: {
     scrumMasterEmails: (process.env.SCRUM_MASTER_EMAILS || process.env.SCRUM_MASTER_EMAIL || '').split(',').map(e => e.trim()).filter(e => e),
@@ -55,6 +58,9 @@ export const JIRA_CUSTOM_FIELDS = {
   FIGMA_LINK: process.env.JIRA_FIGMA_LINK_FIELD_ID || 'customfield_10021',
   EPIC_TYPE: process.env.JIRA_EPIC_TYPE_FIELD_ID || 'customfield_12224',
   EPIC_TYPE_VALUE: process.env.JIRA_EPIC_TYPE_VALUE || '11209', // Functional Epic Type
+  EPIC_LINK: process.env.JIRA_EPIC_LINK_FIELD_ID || 'customfield_10011', // Epic Link field for linking stories to epics
+  DEV_START_DATE: process.env.JIRA_DEV_START_DATE_FIELD_ID || 'customfield_10020', // Dev Start Date custom field
+  DEV_END_DATE: process.env.JIRA_DEV_END_DATE_FIELD_ID || 'customfield_10022', // Dev End Date custom field (note: may need to be configured per Jira instance)
 };
 
 // Issue type mapping

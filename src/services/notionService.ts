@@ -27,24 +27,56 @@ export class NotionService {
     }
   }
 
+  /**
+   * Converts Notion rich_text array to markdown with formatting preserved
+   */
+  private convertRichTextToMarkdown(richText: any[]): string {
+    if (!richText || richText.length === 0) return '';
+    
+    return richText.map((textItem: any) => {
+      let text = textItem.plain_text || '';
+      const annotations = textItem.annotations || {};
+      const link = textItem.href;
+      
+      // Apply formatting in order: code, bold, italic, strikethrough
+      if (annotations.code) {
+        text = `\`${text}\``;
+      }
+      if (annotations.bold) {
+        text = `**${text}**`;
+      }
+      if (annotations.italic) {
+        text = `*${text}*`;
+      }
+      if (annotations.strikethrough) {
+        text = `~~${text}~~`;
+      }
+      
+      // Add link if present
+      if (link) {
+        text = `[${text}](${link})`;
+      }
+      
+      return text;
+    }).join('');
+  }
+
   async getPageContent(pageId: string): Promise<string> {
     try {
-      const response = await this.client.get(`/blocks/${pageId}/children`);
-      const blocks = response.data.results;
+      // Use recursive function to get all blocks including nested ones
+      const allBlocks = await this.getAllBlocksRecursive(pageId);
       
-      logger.debug(`📄 Fetching page content for ${pageId}: found ${blocks.length} blocks`);
+      logger.debug(`📄 Fetching page content for ${pageId}: found ${allBlocks.length} blocks (including nested)`);
       
       // Extract comprehensive text content from blocks
       let content = '';
       let listCounter = 1;
       
-      for (const block of blocks) {
+      for (const block of allBlocks) {
         switch (block.type) {
           case 'paragraph':
             if (block.paragraph?.rich_text) {
-              const text = block.paragraph.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.paragraph.rich_text);
               if (text.trim()) {
                 content += text + '\n\n';
               }
@@ -53,18 +85,14 @@ export class NotionService {
             
           case 'bulleted_list_item':
             if (block.bulleted_list_item?.rich_text) {
-              const text = block.bulleted_list_item.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.bulleted_list_item.rich_text);
               content += '• ' + text + '\n';
             }
             break;
             
           case 'numbered_list_item':
             if (block.numbered_list_item?.rich_text) {
-              const text = block.numbered_list_item.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.numbered_list_item.rich_text);
               content += `${listCounter}. ` + text + '\n';
               listCounter++;
             }
@@ -72,45 +100,56 @@ export class NotionService {
             
           case 'heading_1':
             if (block.heading_1?.rich_text) {
-              const text = block.heading_1.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.heading_1.rich_text);
               content += `# ${text}\n\n`;
             }
             break;
             
           case 'heading_2':
             if (block.heading_2?.rich_text) {
-              const text = block.heading_2.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.heading_2.rich_text);
               content += `## ${text}\n\n`;
             }
             break;
             
           case 'heading_3':
             if (block.heading_3?.rich_text) {
-              const text = block.heading_3.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.heading_3.rich_text);
               content += `### ${text}\n\n`;
+            }
+            break;
+            
+          case 'heading_4':
+            if (block.heading_4?.rich_text) {
+              const text = this.convertRichTextToMarkdown(block.heading_4.rich_text);
+              content += `#### ${text}\n\n`;
+            }
+            break;
+            
+          case 'heading_5':
+            if (block.heading_5?.rich_text) {
+              const text = this.convertRichTextToMarkdown(block.heading_5.rich_text);
+              content += `##### ${text}\n\n`;
+            }
+            break;
+            
+          case 'heading_6':
+            if (block.heading_6?.rich_text) {
+              const text = this.convertRichTextToMarkdown(block.heading_6.rich_text);
+              content += `###### ${text}\n\n`;
             }
             break;
             
           case 'quote':
             if (block.quote?.rich_text) {
-              const text = block.quote.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.quote.rich_text);
               content += `> ${text}\n\n`;
             }
             break;
             
           case 'code':
             if (block.code?.rich_text) {
-              const text = block.code.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.code.rich_text);
               const language = block.code.language || '';
               
               // Make Gherkin tests collapsible
@@ -124,9 +163,7 @@ export class NotionService {
             
           case 'callout':
             if (block.callout?.rich_text) {
-              const text = block.callout.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.callout.rich_text);
               const icon = block.callout.icon?.emoji || '💡';
               content += `${icon} ${text}\n\n`;
             }
@@ -134,9 +171,7 @@ export class NotionService {
             
           case 'toggle':
             if (block.toggle?.rich_text) {
-              const text = block.toggle.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.toggle.rich_text);
               content += `▶ ${text}\n\n`;
             }
             break;
@@ -147,11 +182,115 @@ export class NotionService {
             
           case 'to_do':
             if (block.to_do?.rich_text) {
-              const text = block.to_do.rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block.to_do.rich_text);
               const checked = block.to_do.checked ? '☑' : '☐';
               content += `${checked} ${text}\n`;
+            }
+            break;
+            
+          case 'image':
+            try {
+              const imageUrl = block.image?.file?.url || block.image?.external?.url || '';
+              const caption = block.image?.caption ? this.convertRichTextToMarkdown(block.image.caption) : '';
+              if (imageUrl) {
+                content += `![${caption || 'Image'}](${imageUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract image:`, error);
+            }
+            break;
+            
+          case 'video':
+            try {
+              const videoUrl = block.video?.file?.url || block.video?.external?.url || '';
+              const caption = block.video?.caption ? this.convertRichTextToMarkdown(block.video.caption) : '';
+              if (videoUrl) {
+                content += `📹 [Video: ${caption || 'Video'}](${videoUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract video:`, error);
+            }
+            break;
+            
+          case 'file':
+            try {
+              const fileUrl = block.file?.file?.url || block.file?.external?.url || '';
+              const fileName = block.file?.name || 'File';
+              if (fileUrl) {
+                content += `📎 [${fileName}](${fileUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract file:`, error);
+            }
+            break;
+            
+          case 'pdf':
+            try {
+              const pdfUrl = block.pdf?.file?.url || block.pdf?.external?.url || '';
+              const caption = block.pdf?.caption ? this.convertRichTextToMarkdown(block.pdf.caption) : '';
+              if (pdfUrl) {
+                content += `📄 [PDF: ${caption || 'PDF'}](${pdfUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract PDF:`, error);
+            }
+            break;
+            
+          case 'bookmark':
+            try {
+              const bookmarkUrl = block.bookmark?.url || '';
+              const caption = block.bookmark?.caption ? this.convertRichTextToMarkdown(block.bookmark.caption) : '';
+              if (bookmarkUrl) {
+                content += `🔖 [${caption || bookmarkUrl}](${bookmarkUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract bookmark:`, error);
+            }
+            break;
+            
+          case 'embed':
+            try {
+              const embedUrl = block.embed?.url || '';
+              const caption = block.embed?.caption ? this.convertRichTextToMarkdown(block.embed.caption) : '';
+              if (embedUrl) {
+                content += `🔗 [Embed: ${caption || embedUrl}](${embedUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract embed:`, error);
+            }
+            break;
+            
+          case 'link_preview':
+            try {
+              const previewUrl = block.link_preview?.url || '';
+              if (previewUrl) {
+                content += `🔗 [Link Preview](${previewUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract link preview:`, error);
+            }
+            break;
+            
+          case 'link_to_page':
+            try {
+              const linkedPageId = block.link_to_page?.page_id || '';
+              if (linkedPageId) {
+                const linkedPageUrl = `https://www.notion.so/${linkedPageId.replace(/-/g, '')}`;
+                content += `🔗 [Linked Page](${linkedPageUrl})\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract link to page:`, error);
+            }
+            break;
+            
+          case 'equation':
+            try {
+              const expression = block.equation?.expression || '';
+              if (expression) {
+                content += `\`\`\`\n$${expression}$\n\`\`\`\n\n`;
+              }
+            } catch (error) {
+              logger.warn(`⚠️ Could not extract equation:`, error);
             }
             break;
             
@@ -195,12 +334,13 @@ export class NotionService {
           default:
             // For any other block types, try to extract text if available
             if (block[block.type]?.rich_text) {
-              const text = block[block.type].rich_text
-                .map((text: any) => text.plain_text)
-                .join('');
+              const text = this.convertRichTextToMarkdown(block[block.type].rich_text);
               if (text.trim()) {
                 content += text + '\n';
               }
+            } else {
+              // Log unsupported block type for debugging
+              logger.debug(`⚠️ Unsupported block type: ${block.type}`);
             }
             break;
         }
@@ -211,6 +351,46 @@ export class NotionService {
     } catch (error) {
       logger.error(`Error fetching page content for ${pageId}:`, error);
       return '';
+    }
+  }
+
+  /**
+   * Recursively fetch all blocks including nested children
+   */
+  private async getAllBlocksRecursive(blockId: string, allBlocks: any[] = []): Promise<any[]> {
+    try {
+      let hasMore = true;
+      let startCursor: string | undefined = undefined;
+      
+      while (hasMore) {
+        const params: any = { page_size: 100 };
+        if (startCursor) {
+          params.start_cursor = startCursor;
+        }
+        
+        const response = await this.client.get(`/blocks/${blockId}/children`, { params });
+        const blocks = response.data.results;
+        const nextCursor = response.data.next_cursor;
+        
+        // Process each block and recursively get its children
+        for (const block of blocks) {
+          allBlocks.push(block);
+          
+          // Check if block has children (nested blocks)
+          if (block.has_children) {
+            // Recursively get children blocks
+            await this.getAllBlocksRecursive(block.id, allBlocks);
+          }
+        }
+        
+        hasMore = !!nextCursor;
+        startCursor = nextCursor;
+      }
+      
+      return allBlocks;
+    } catch (error) {
+      logger.error(`Error fetching blocks recursively for ${blockId}:`, error);
+      return allBlocks; // Return what we have so far
     }
   }
 
@@ -226,10 +406,35 @@ export class NotionService {
 
   async queryDatabase(databaseId: string, filter?: any): Promise<NotionPage[]> {
     try {
-      const response = await this.client.post(`/databases/${databaseId}/query`, {
-        filter,
-      });
-      return response.data.results;
+      const allPages: NotionPage[] = [];
+      let hasMore = true;
+      let startCursor: string | undefined = undefined;
+      
+      while (hasMore) {
+        const params: any = {
+          page_size: 100,
+        };
+        
+        if (filter) {
+          params.filter = filter;
+        }
+        
+        if (startCursor) {
+          params.start_cursor = startCursor;
+        }
+        
+        const response = await this.client.post(`/databases/${databaseId}/query`, params);
+        const results = response.data.results || [];
+        allPages.push(...results);
+        
+        hasMore = response.data.has_more || false;
+        startCursor = response.data.next_cursor;
+        
+        logger.debug(`📊 Fetched ${results.length} pages (total: ${allPages.length}, has_more: ${hasMore})`);
+      }
+      
+      logger.info(`✅ Query completed: Retrieved ${allPages.length} total pages from database`);
+      return allPages;
     } catch (error) {
       logger.error('Error querying Notion database:', error);
       throw error;
@@ -254,29 +459,59 @@ export class NotionService {
 
   async determineDatabaseFromPage(pageId: string): Promise<NotionDatabaseType> {
     try {
+      // Normalize page ID format (handle both with and without hyphens)
+      const normalizePageId = (id: string): string => {
+        // Remove hyphens and convert to standard format
+        const cleanId = id.replace(/-/g, '');
+        if (cleanId.length === 32) {
+          // Format with hyphens: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+          return `${cleanId.substring(0, 8)}-${cleanId.substring(8, 12)}-${cleanId.substring(12, 16)}-${cleanId.substring(16, 20)}-${cleanId.substring(20, 32)}`;
+        }
+        return id;
+      };
+      
+      const normalizedPageId = normalizePageId(pageId);
+      logger.debug(`🔍 Normalized page ID: "${pageId}" → "${normalizedPageId}"`);
+      
       // First try to get the page from user stories database
       try {
+        logger.debug(`🔍 Checking User Stories database for page: ${normalizedPageId}`);
         const userStoriesPages = await this.queryUserStoriesDatabase();
-        const foundInUserStories = userStoriesPages.some(page => page.id === pageId);
+        const foundInUserStories = userStoriesPages.some(page => {
+          const pageIdNormalized = normalizePageId(page.id);
+          return pageIdNormalized === normalizedPageId || page.id === normalizedPageId || page.id === pageId;
+        });
         if (foundInUserStories) {
+          logger.info(`✅ Page found in User Stories database`);
           return 'userStories';
         }
+        logger.debug(`❌ Page not found in User Stories database (checked ${userStoriesPages.length} pages)`);
       } catch (error) {
+        logger.warn(`⚠️ Error checking User Stories database:`, error);
         // Page not found in user stories database, continue to check epics
       }
 
       // Then try to get the page from epics database
       try {
+        logger.debug(`🔍 Checking Epics database for page: ${normalizedPageId}`);
         const epicsPages = await this.queryEpicsDatabase();
-        const foundInEpics = epicsPages.some(page => page.id === pageId);
+        logger.info(`📊 Epics database contains ${epicsPages.length} pages`);
+        const foundInEpics = epicsPages.some(page => {
+          const pageIdNormalized = normalizePageId(page.id);
+          return pageIdNormalized === normalizedPageId || page.id === normalizedPageId || page.id === pageId;
+        });
         if (foundInEpics) {
+          logger.info(`✅ Page found in Epics database`);
           return 'epics';
         }
+        logger.debug(`❌ Page not found in Epics database (checked ${epicsPages.length} pages)`);
       } catch (error) {
+        logger.warn(`⚠️ Error checking Epics database:`, error);
         // Page not found in epics database either
       }
 
       // If we can't determine from query, try to get the page directly and check its properties
+      logger.info(`🔍 Page not found in database queries, fetching page directly to determine type...`);
       const page = await this.getPage(pageId);
       const pageData = await this.extractPageData(page);
       
@@ -289,10 +524,14 @@ export class NotionService {
                     pageData.vertical ||
                     pageData.issueType === 'Epic';
       
+      logger.info(`🔍 Determined database type from page properties: ${isEpic ? 'epics' : 'userStories'}`);
+      logger.info(`   isEpic: ${pageData.isEpic}, devStartDate: ${pageData.devStartDate}, owner: ${pageData.owner}`);
+      
       return isEpic ? 'epics' : 'userStories';
     } catch (error) {
       logger.error('Error determining database from page:', error);
       // Default to user stories if we can't determine
+      logger.warn(`⚠️ Defaulting to 'userStories' database type`);
       return 'userStories';
     }
   }
@@ -680,13 +919,25 @@ export class NotionService {
     const nameProperty = properties['Name'];
     logger.debug(`📝 Name property:`, JSON.stringify(nameProperty, null, 2));
     
-    // Try to get description from Description property first, then Notes, then fall back to page content
-    let description = this.extractTextValue(properties['Description']) || 
-                     this.extractTextValue(properties['Notes']);
-    if (!description) {
-      // If no Description or Notes property, try to get content from page body
-      logger.debug(`📄 No Description or Notes property, fetching page content...`);
-      description = await this.getPageContent(page.id);
+    // Always try to get full page content - combine property-based description with page body content
+    let description = '';
+    
+    // First, try to get description from Description or Notes properties
+    const propertyDescription = this.extractTextValue(properties['Description']) || 
+                               this.extractTextValue(properties['Notes']);
+    
+    // Always fetch page content to get the full content as it appears in Notion
+    logger.debug(`📄 Fetching full page content from blocks...`);
+    const pageContent = await this.getPageContent(page.id);
+    
+    // Combine property description with page content
+    if (propertyDescription && pageContent) {
+      // If both exist, combine them with a separator
+      description = `${propertyDescription}\n\n---\n\n${pageContent}`;
+    } else if (propertyDescription) {
+      description = propertyDescription;
+    } else if (pageContent) {
+      description = pageContent;
     }
     
     // Log description extraction for debugging
@@ -694,6 +945,12 @@ export class NotionService {
       logger.warn(`⚠️ No description found for page ${page.id} - Jira ticket will be created without description`);
     } else {
       logger.info(`✅ Description extracted successfully (${description.length} characters)`);
+      if (propertyDescription) {
+        logger.debug(`   📝 From properties: ${propertyDescription.length} characters`);
+      }
+      if (pageContent) {
+        logger.debug(`   📄 From page content: ${pageContent.length} characters`);
+      }
     }
     
     // Try to extract title from different possible property names
@@ -706,40 +963,207 @@ export class NotionService {
     
     logger.debug(`📝 Final extracted title: "${title}"`);
     
-    // Extract epic key from relation field
-    let epicKey = this.extractTextValue(properties['Epic Key']);
+    // Extract epic key from various possible fields
+    let epicKey = this.extractTextValue(properties['Epic Key']) ||
+                  this.extractTextValue(properties['Epic Link']) ||
+                  this.extractTextValue(properties['Epic']);
+    
     if (!epicKey) {
       // Try to get epic key from the Initiatives relation
       epicKey = await this.extractEpicKeyFromRelation(properties['🚀 Initiatives']);
     }
 
-    // Extract parent epic key if it exists
+    // Extract parent epic key if it exists (check multiple field names)
     let parentEpic = undefined;
-    if (properties['Parent Epic'] || properties['Parent Epic Key']) {
-      parentEpic = this.extractTextValue(properties['Parent Epic']) || 
-                   this.extractTextValue(properties['Parent Epic Key']);
-    }
-
-    // Extract Figma link if it exists
-    const figmaLink = this.extractTextValue(properties['Figma Link']) || 
-                     this.extractTextValue(properties['Figma']) ||
-                     this.extractTextValue(properties['Design Link']);
     
-    if (figmaLink) {
-      logger.info(`🎨 Figma link extracted: ${figmaLink}`);
-    } else {
-      logger.debug(`⚠️ No Figma link found in Notion page properties`);
+    // Check for Parent Epic field - handle both relation and text/url types
+    if (properties['Parent Epic']) {
+      const parentEpicProp = properties['Parent Epic'];
+      if (parentEpicProp.type === 'relation') {
+        // Handle relation type - extract epic key from related page
+        logger.debug(`🔗 Parent Epic is a relation field, extracting epic key from related page...`);
+        parentEpic = await this.extractEpicKeyFromRelation(parentEpicProp);
+        if (parentEpic) {
+          logger.info(`✅ Extracted parent epic key from relation: ${parentEpic}`);
+        }
+      } else {
+        // Handle text/url types
+        parentEpic = this.extractTextValue(parentEpicProp);
+      }
+    }
+    
+    // Fallback to other field names if Parent Epic not found
+    if (!parentEpic) {
+      if (properties['Parent Epic Key']) {
+        const parentEpicKeyProp = properties['Parent Epic Key'];
+        if (parentEpicKeyProp.type === 'relation') {
+          parentEpic = await this.extractEpicKeyFromRelation(parentEpicKeyProp);
+        } else {
+          parentEpic = this.extractTextValue(parentEpicKeyProp);
+        }
+      }
+    }
+    
+    if (!parentEpic) {
+      if (properties['Epic Link']) {
+        const epicLinkProp = properties['Epic Link'];
+        if (epicLinkProp.type === 'relation') {
+          parentEpic = await this.extractEpicKeyFromRelation(epicLinkProp);
+        } else {
+          parentEpic = this.extractTextValue(epicLinkProp);
+        }
+      }
+    }
+    
+    if (!parentEpic) {
+      if (properties['Epic']) {
+        const epicProp = properties['Epic'];
+        if (epicProp.type === 'relation') {
+          parentEpic = await this.extractEpicKeyFromRelation(epicProp);
+        } else {
+          parentEpic = this.extractTextValue(epicProp);
+        }
+      }
+    }
+    
+    // If parentEpic is not set but epicKey is, use epicKey as parentEpic
+    if (!parentEpic && epicKey) {
+      parentEpic = epicKey;
+      logger.info(`📝 Using epicKey (${epicKey}) as parentEpic since Parent Epic field not found`);
     }
 
+    // Extract Figma link if it exists - check multiple possible field names
+    // Try each property name and log which one works
+    let figmaLink: string | undefined = undefined;
+    const figmaPropertyNames = ['Figma Link', 'Figma', 'Design Link', 'Design reference', 'Design Reference', 'Figma Design Link'];
+    
+    for (const propName of figmaPropertyNames) {
+      const prop = properties[propName];
+      if (prop) {
+        logger.debug(`🔍 Checking Figma property "${propName}": type=${prop.type}, value=${prop.url || prop.rich_text?.[0]?.text?.content || 'N/A'}`);
+        
+        // Handle URL type properties directly
+        let extracted: string | undefined = undefined;
+        if (prop.type === 'url' && prop.url) {
+          extracted = prop.url.trim();
+          logger.debug(`✅ Found URL property "${propName}": ${extracted}`);
+        } else if (prop.type === 'rich_text' && prop.rich_text) {
+          // Handle rich_text fields - extract links from rich text
+          for (const textItem of prop.rich_text) {
+            // Check if this text item has a link
+            if (textItem.href) {
+              extracted = textItem.href.trim();
+              logger.debug(`✅ Found link in rich_text property "${propName}": ${extracted}`);
+              break;
+            }
+            // Also check plain_text for URL patterns
+            if (textItem.plain_text && (textItem.plain_text.startsWith('http://') || textItem.plain_text.startsWith('https://'))) {
+              extracted = textItem.plain_text.trim();
+              logger.debug(`✅ Found URL in plain_text of "${propName}": ${extracted}`);
+              break;
+            }
+          }
+          // If no link found in rich_text, try extractTextValue as fallback
+          if (!extracted) {
+            extracted = this.extractTextValue(prop);
+          }
+        } else {
+          // Try extractTextValue for other types
+          extracted = this.extractTextValue(prop);
+        }
+        
+        if (extracted && extracted.trim()) {
+          // Validate that it's a valid URL
+          const trimmedLink = extracted.trim();
+          if (trimmedLink.startsWith('http://') || trimmedLink.startsWith('https://')) {
+            figmaLink = trimmedLink;
+            logger.info(`🎨 Figma link extracted from "${propName}": ${figmaLink}`);
+            break;
+          } else {
+            logger.debug(`⚠️ Property "${propName}" contains text but not a valid URL: "${trimmedLink}"`);
+          }
+        } else if (prop) {
+          logger.debug(`⚠️ Property "${propName}" exists but has no valid value (type: ${prop.type})`);
+        }
+      }
+    }
+    
+    // Only log if we actually checked properties but didn't find one
+    // Don't log if the property simply doesn't exist (which is normal)
+    if (!figmaLink) {
+      logger.debug(`ℹ️ No Figma link found in Notion page (this is normal if the field is empty or doesn't exist)`);
+    }
+
+    // Extract status with detailed logging - check multiple possible field names
+    let statusProperty = properties['Status'] || properties['status'] || properties['State'] || properties['state'];
+    
+    // If Status field not found, log all available properties for debugging
+    if (!statusProperty) {
+      logger.warn(`⚠️ Status field not found. Available properties: ${Object.keys(properties).join(', ')}`);
+      // Try to find any property that might be a status field
+      for (const [key, value] of Object.entries(properties)) {
+        if (value && (value as any).type === 'status' || (value as any).type === 'select') {
+          logger.info(`💡 Found potential status field: "${key}" (type: ${(value as any).type})`);
+          statusProperty = value as any;
+          break;
+        }
+      }
+    }
+    
+    logger.debug(`📊 Extracting Status field:`, JSON.stringify(statusProperty, null, 2));
+    const extractedStatus = this.extractSelectValue(statusProperty);
+    
+    // Normalize status - trim whitespace and handle common variations
+    let normalizedStatus = extractedStatus;
+    if (normalizedStatus) {
+      normalizedStatus = normalizedStatus.trim();
+      // Handle common status name variations
+      const statusVariations: { [key: string]: string } = {
+        'ready for dev': 'Ready For Dev',
+        'ready-for-dev': 'Ready For Dev',
+        'ready_for_dev': 'Ready For Dev',
+        'approved': 'Approved',
+        'approve': 'Approved',
+      };
+      const lowerStatus = normalizedStatus.toLowerCase();
+      if (statusVariations[lowerStatus]) {
+        normalizedStatus = statusVariations[lowerStatus];
+        logger.debug(`🔄 Normalized status from "${extractedStatus}" to "${normalizedStatus}"`);
+      }
+    }
+    
+    logger.info(`✅ Extracted Status: "${normalizedStatus || 'undefined'}" (from property type: ${statusProperty?.type || 'unknown'})`);
+    
+    // Extract Priority - check multiple possible field names
+    let priority: string | undefined = undefined;
+    const priorityPropertyNames = ['Priority', 'priority', 'Importance', 'importance', 'Urgency', 'urgency'];
+    
+    for (const propName of priorityPropertyNames) {
+      const prop = properties[propName];
+      if (prop) {
+        logger.debug(`🔍 Checking Priority property "${propName}": type=${prop.type}`);
+        const extracted = this.extractSelectValue(prop);
+        if (extracted) {
+          priority = extracted;
+          logger.info(`⚡ Priority extracted from "${propName}": ${priority}`);
+          break;
+        }
+      }
+    }
+    
+    if (!priority) {
+      logger.debug(`ℹ️ No Priority field found in Notion page (this is normal if the field is empty or doesn't exist)`);
+    }
+    
     const extractedData = {
       title: title,
       description: description,
-      status: this.extractSelectValue(properties['Status']),
+      status: normalizedStatus,
       issueType: 'Story', // Default to Story since no Issue Type property
       storyPoints: this.extractNumberValue(properties['Story Points']),
       epicLink: epicKey,
       parentEpic: parentEpic,
-      priority: this.extractSelectValue(properties['Priority']),
+      priority: priority,
       dueDate: this.extractDateValue(properties['Due Date']),
       startDate: this.extractDateValue(properties['Start Date']),
       endDate: this.extractDateValue(properties['End Date']),
@@ -803,18 +1227,28 @@ export class NotionService {
   }
 
   private extractSelectValue(property: any): string | undefined {
-    if (!property) return undefined;
+    if (!property) {
+      logger.debug('extractSelectValue: property is null or undefined');
+      return undefined;
+    }
+    
+    logger.debug(`extractSelectValue: property type is "${property.type}"`);
     
     // Handle select properties
     if (property.type === 'select') {
-      return property.select?.name;
+      const value = property.select?.name;
+      logger.debug(`extractSelectValue: extracted select value: "${value}"`);
+      return value;
     }
     
     // Handle status properties
     if (property.type === 'status') {
-      return property.status?.name;
+      const value = property.status?.name;
+      logger.debug(`extractSelectValue: extracted status value: "${value}"`);
+      return value;
     }
     
+    logger.debug(`extractSelectValue: property type "${property.type}" is not select or status`);
     return undefined;
   }
 
@@ -866,14 +1300,55 @@ export class NotionService {
       const relatedPageId = relations[0].id;
       const relatedPage = await this.getPage(relatedPageId);
       
-      // Extract the Jira Epic Link from the related epic page
-      const jiraLinkProperty = relatedPage.properties['Jira Epic Link'];
-      if (jiraLinkProperty && jiraLinkProperty.type === 'url' && jiraLinkProperty.url) {
-        // Extract the Jira key from the URL 
-        const urlMatch = jiraLinkProperty.url.match(/\/browse\/([A-Z]+-\d+)/);
-        if (urlMatch) {
-          logger.debug(`🔗 Extracted epic key from relation: ${urlMatch[1]}`);
-          return urlMatch[1];
+      // Check multiple possible field names for Jira Epic Link
+      const possibleJiraLinkFields = ['Jira Epic Link', 'Jira Link', 'Jira Story Link', 'Jira Issue Link', 'Jira'];
+      
+      for (const fieldName of possibleJiraLinkFields) {
+        const jiraLinkProperty = relatedPage.properties[fieldName];
+        if (jiraLinkProperty) {
+          // Check if it's a URL type field
+          if (jiraLinkProperty.type === 'url' && jiraLinkProperty.url) {
+            // Extract the Jira key from the URL 
+            const urlMatch = jiraLinkProperty.url.match(/\/browse\/([A-Z]+-\d+)/);
+            if (urlMatch) {
+              logger.debug(`🔗 Extracted epic key from relation field "${fieldName}": ${urlMatch[1]}`);
+              return urlMatch[1];
+            }
+          }
+          // Also check rich_text fields for Jira links
+          if (jiraLinkProperty.type === 'rich_text' && jiraLinkProperty.rich_text) {
+            // Look for Jira links in rich text
+            for (const textItem of jiraLinkProperty.rich_text) {
+              if (textItem.href) {
+                const urlMatch = textItem.href.match(/\/browse\/([A-Z]+-\d+)/);
+                if (urlMatch) {
+                  logger.debug(`🔗 Extracted epic key from relation rich_text field "${fieldName}": ${urlMatch[1]}`);
+                  return urlMatch[1];
+                }
+              }
+              // Also check plain_text for Jira key patterns
+              if (textItem.plain_text) {
+                const keyMatch = textItem.plain_text.match(/([A-Z]+-\d+)/);
+                if (keyMatch) {
+                  logger.debug(`🔗 Extracted epic key from relation plain_text field "${fieldName}": ${keyMatch[1]}`);
+                  return keyMatch[1];
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Fallback: Check if the page title contains a Jira key pattern
+      const titleProperty = relatedPage.properties['Name'] || relatedPage.properties['Title'];
+      if (titleProperty) {
+        const title = this.extractTextValue(titleProperty);
+        if (title) {
+          const keyMatch = title.match(/([A-Z]+-\d+)/);
+          if (keyMatch) {
+            logger.debug(`🔗 Extracted epic key from relation page title: ${keyMatch[1]}`);
+            return keyMatch[1];
+          }
         }
       }
     } catch (error) {
@@ -967,7 +1442,8 @@ export class NotionService {
         if (row.type === 'table_row' && row.table_row?.cells) {
           const cells = row.table_row.cells;
           const cellTexts = cells.map((cell: any[]) => {
-            return cell.map((text: any) => text.plain_text).join('');
+            // Convert rich_text in cells to markdown with formatting preserved
+            return this.convertRichTextToMarkdown(cell);
           });
           
           tableContent += '| ' + cellTexts.join(' | ') + ' |\n';
@@ -997,9 +1473,9 @@ export class NotionService {
     
     switch (property.type) {
       case 'title':
-        return property.title?.map((t: any) => t.plain_text).join('') || '';
+        return property.title ? this.convertRichTextToMarkdown(property.title) : '';
       case 'rich_text':
-        return property.rich_text?.map((t: any) => t.plain_text).join('') || '';
+        return property.rich_text ? this.convertRichTextToMarkdown(property.rich_text) : '';
       case 'number':
         return property.number?.toString() || '';
       case 'select':

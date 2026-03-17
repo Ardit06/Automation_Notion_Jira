@@ -399,7 +399,9 @@ Automation_Jira_Notion/
 ├── Dockerfile                   # Docker build instructions
 ├── docker-compose.yml           # Docker Compose configuration
 ├── README.md                    # This file
-└── COMPREHENSIVE_DOCUMENTATION.md # Complete documentation
+├── CONFIG_GUIDE.md              # Environment variables and deployment
+├── WEBHOOK_SETUP.md             # Notion webhook configuration
+└── k8s/                         # Kubernetes manifests and guides
 ```
 
 ### Key Files Explained
@@ -694,26 +696,14 @@ tail -f logs/combined.log
 1. **Check logs**: `logs/combined.log` and `logs/error.log`
 2. **Test connections**: Use `/webhook/test` endpoint
 3. **Verify configuration**: Check all environment variables
-4. **Review documentation**: See `COMPREHENSIVE_DOCUMENTATION.md`
+4. **Review documentation**: [CONFIG_GUIDE.md](CONFIG_GUIDE.md), [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md)
 
 ## 📚 Documentation
 
-### Quick Reference
-
-- **This README**: Quick setup and basic usage
-- **COMPREHENSIVE_DOCUMENTATION.md**: Complete guide with all details
-
-### Documentation Contents
-
-The comprehensive documentation includes:
-- Complete project structure breakdown
-- Detailed architecture explanation
-- Step-by-step workflows
-- Complete API reference
-- "What happens when..." scenarios
-- Advanced troubleshooting
-- Security best practices
-- Deployment guides
+- **This README**: Quick setup and usage
+- **[CONFIG_GUIDE.md](CONFIG_GUIDE.md)**: `.env` variables, optional Jira fields, K8s deploy notes
+- **[WEBHOOK_SETUP.md](WEBHOOK_SETUP.md)**: Notion webhook URL and verification
+- **k8s/**: [DEPLOYMENT_GUIDE.md](k8s/DEPLOYMENT_GUIDE.md), [MINIKUBE_GUIDE.md](k8s/MINIKUBE_GUIDE.md)
 
 ### Additional Resources
 
@@ -726,7 +716,7 @@ The comprehensive documentation includes:
 ### Getting Help
 
 1. Check the [Troubleshooting](#-troubleshooting) section
-2. Review `COMPREHENSIVE_DOCUMENTATION.md`
+2. Review [CONFIG_GUIDE.md](CONFIG_GUIDE.md) and [WEBHOOK_SETUP.md](WEBHOOK_SETUP.md)
 3. Check logs in `logs/combined.log`
 4. Test connections using `/webhook/test` endpoint
 

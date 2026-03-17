@@ -34,7 +34,10 @@ app.get('/', (req, res) => {
       webhook: '/webhook/notion',
       sync: '/webhook/sync',
       test: '/webhook/test',
+      testPage: '/webhook/test-page',
       health: '/webhook/health',
+      checkUpdates: '/webhook/check-updates',
+      createStoriesFromEpic: '/webhook/create-stories-from-epic',
     },
   });
 });
@@ -43,10 +46,32 @@ app.get('/', (req, res) => {
 app.post('/', (req, res) => {
   logger.info('Received POST request at root path:', req.body);
   
-  // Handle webhook verification
-  if (req.body && req.body.verification_token) {
-    logger.info('Received webhook verification request at root path:', req.body.verification_token);
-    return res.status(200).json({ verification_token: req.body.verification_token });
+  // Handle webhook verification - try all possible formats (matching webhookHandler logic)
+  if (req.body) {
+    // Check for verification_token
+    if (req.body.verification_token) {
+      logger.info('Received webhook verification request at root path:', req.body.verification_token);
+      const token = req.body.verification_token;
+      // Try format 1: Just the token value as plain text
+      logger.info('Sending verification response (plain text):', token);
+      return res.status(200).send(token);
+    }
+    
+    // Check for challenge
+    if (req.body.challenge) {
+      logger.info('Received challenge request at root path:', req.body.challenge);
+      const challenge = req.body.challenge;
+      logger.info('Sending challenge response:', { challenge: challenge });
+      return res.status(200).json({ challenge: challenge });
+    }
+    
+    // Check for verification type
+    if (req.body.type === 'verification') {
+      logger.info('Received verification type request at root path:', req.body);
+      const token = req.body.verification_token || req.body.challenge;
+      logger.info('Sending verification type response:', { verification_token: token });
+      return res.status(200).json({ verification_token: token });
+    }
   }
   
   // Process webhook events at root path (since Notion is sending them here)

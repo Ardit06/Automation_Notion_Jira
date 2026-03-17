@@ -2,7 +2,7 @@ import { NotionService } from './notionService';
 import { JiraService } from './jiraService';
 import { NotionPage } from '../types';
 import { logger } from './loggerService';
-import { config } from '../config';
+import { config, JIRA_CUSTOM_FIELDS } from '../config';
 
 export class AutomationService {
   private notionService: NotionService;
@@ -31,7 +31,19 @@ export class AutomationService {
 
       // Get the page from Notion
       logger.info(`📄 Fetching page from Notion API...`);
-      const page = await this.notionService.getPage(pageId);
+      let page;
+      try {
+        page = await this.notionService.getPage(pageId);
+      } catch (error: any) {
+        // Check if the error is because the ID is a database, not a page
+        if (error.response?.data?.message?.includes('is a database, not a page')) {
+          logger.error(`❌ ERROR: The provided ID ${pageId} is a database, not a page.`);
+          logger.error(`   Please provide a page ID from within the database, not the database ID itself.`);
+          logger.error(`   To get a page ID: Open the page in Notion and copy the page ID from the URL.`);
+          return;
+        }
+        throw error;
+      }
       logger.info(`📄 Page fetched successfully. Page ID: ${page.id}`);
       logger.info(`📄 Page properties keys: ${Object.keys(page.properties).join(', ')}`);
       
@@ -57,11 +69,41 @@ export class AutomationService {
 
       // Check if Jira link already exists
       const existingLink = await this.notionService.checkJiraLinkExists(pageId);
-      if (existingLink.exists) {
+      if (existingLink.exists && existingLink.jiraKey) {
         logger.info(`🔗 EXISTING JIRA LINK FOUND:`);
         logger.info(`   📋 Jira Key: ${existingLink.jiraKey}`);
         logger.info(`   🔗 Jira URL: ${existingLink.jiraUrl}`);
         logger.info(`   📄 Notion Page: ${pageId}`);
+        
+        // Determine if this is an Epic or Story
+        const isEpic = databaseType === 'epics' || 
+                      pageData.isEpic === true || 
+                      (pageData.title && pageData.title.toLowerCase().includes('epic')) ||
+                      (pageData.title && (
+                        pageData.title.toLowerCase().includes('dashboard') ||
+                        pageData.title.toLowerCase().includes('setup') ||
+                        pageData.title.toLowerCase().includes('system') ||
+                        pageData.title.toLowerCase().includes('platform') ||
+                        pageData.title.toLowerCase().includes('feature')
+                      ));
+        
+        // For existing epics, update them with new information instead of creating new ones
+        if (isEpic) {
+          logger.info(`🔄 Updating existing Epic ${existingLink.jiraKey} with new information from Notion`);
+          
+          // Update the epic with new information
+          await this.updateJiraIssueContent(existingLink.jiraKey, pageData, pageId);
+          
+          logger.info(`✅ Epic ${existingLink.jiraKey} updated successfully`);
+        } else {
+          // For existing stories, also update them
+          logger.info(`🔄 Updating existing Story ${existingLink.jiraKey} with new information from Notion`);
+          
+          // Update the story with new information
+          await this.updateJiraIssueContent(existingLink.jiraKey, pageData, pageId);
+          
+          logger.info(`✅ Story ${existingLink.jiraKey} updated successfully`);
+        }
         
         // Handle status changes for existing issues
         const statusChangeResult = await this.handleStatusChange(pageId);
@@ -72,19 +114,39 @@ export class AutomationService {
         }
         return;
       }
+      
+      // No existing Jira link found - will create new issue below
+      logger.info(`📝 NO EXISTING JIRA LINK FOUND - will create new issue if status allows`);
 
       // Determine if this should be an Epic or Story based on database type and page content
-      const isEpic = databaseType === 'epics' || 
-                    pageData.isEpic === true || 
-                    (pageData.title && pageData.title.toLowerCase().includes('epic')) ||
-                    // Additional Epic detection patterns
-                    (pageData.title && (
-                      pageData.title.toLowerCase().includes('dashboard') ||
-                      pageData.title.toLowerCase().includes('setup') ||
-                      pageData.title.toLowerCase().includes('system') ||
-                      pageData.title.toLowerCase().includes('platform') ||
-                      pageData.title.toLowerCase().includes('feature')
-                    ));
+      // Priority: 1) Database type, 2) issueType field, 3) isEpic flag, 4) Title keywords
+      let isEpic = false;
+      
+      // First priority: Database type is definitive
+      if (databaseType === 'epics') {
+        isEpic = true;
+      } else if (databaseType === 'userStories') {
+        isEpic = false;
+      } else {
+        // If database type is unclear, check issueType field
+        if (pageData.issueType === 'Epic') {
+          isEpic = true;
+        } else if (pageData.issueType === 'Story') {
+          isEpic = false;
+        } else {
+          // Fallback to other indicators
+          isEpic = Boolean(pageData.isEpic === true || 
+                   (pageData.title && pageData.title.toLowerCase().includes('epic')) ||
+                   // Additional Epic detection patterns (only if database type is unclear)
+                   (pageData.title && (
+                     pageData.title.toLowerCase().includes('dashboard') ||
+                     pageData.title.toLowerCase().includes('setup') ||
+                     pageData.title.toLowerCase().includes('system') ||
+                     pageData.title.toLowerCase().includes('platform') ||
+                     pageData.title.toLowerCase().includes('feature')
+                   )));
+        }
+      }
       
       // Debug logging for Epic detection
       logger.info(`🔍 EPIC DETECTION DEBUG:`);
@@ -113,13 +175,63 @@ export class AutomationService {
       logger.info(`✅ NO DUPLICATES FOUND: Creating new Jira issue with title "${pageData.title}"`);
 
       // Creation gate differs for Epics vs Stories
-      // - Epics: create when status is 'Approved', 'Draft', or 'In Progress' (for testing)
-      // - Stories: create when status is 'Ready For Dev', 'Draft', or 'In Progress' (for testing)
+      // - Epics: create ONLY when status is 'Approved'
+      // - Stories: create ONLY when status is 'Ready For Dev'
       const requiresCreationApproval = isEpic ? 'Approved' : 'Ready For Dev';
-      const allowedStatuses = isEpic ? ['Approved', 'Draft', 'In Progress'] : ['Ready For Dev', 'Draft', 'In Progress'];
+      const allowedStatuses = isEpic ? ['Approved'] : ['Ready For Dev'];
       
-      if (!pageData.status || !allowedStatuses.includes(pageData.status)) {
-        logger.info(`⏸️ Skipping Jira ticket creation - status is '${pageData.status || 'undefined'}', waiting for one of: ${allowedStatuses.join(', ')}`);
+      // Normalize status for comparison (trim whitespace, handle case variations)
+      let normalizedStatus = pageData.status?.trim();
+      
+      // Handle common status name variations and normalize
+      if (normalizedStatus) {
+        const lowerStatus = normalizedStatus.toLowerCase();
+        // Map common variations to expected values
+        const statusMap: { [key: string]: string } = {
+          'ready for dev': 'Ready For Dev',
+          'ready-for-dev': 'Ready For Dev',
+          'ready_for_dev': 'Ready For Dev',
+          'readyfordev': 'Ready For Dev',
+          'approved': 'Approved',
+          'approve': 'Approved',
+        };
+        if (statusMap[lowerStatus]) {
+          normalizedStatus = statusMap[lowerStatus];
+          logger.debug(`🔄 Normalized status from "${pageData.status}" to "${normalizedStatus}"`);
+        }
+      }
+      
+      // Check if status matches (case-insensitive, with fuzzy matching)
+      const statusMatches = normalizedStatus && allowedStatuses.some(
+        allowedStatus => {
+          const match = allowedStatus.toLowerCase() === normalizedStatus!.toLowerCase();
+          if (match) {
+            logger.debug(`✅ Status match found: "${normalizedStatus}" matches "${allowedStatus}"`);
+          }
+          return match;
+        }
+      );
+      
+      logger.info(`🔍 STATUS CHECK:`);
+      logger.info(`   📊 Raw Status: "${pageData.status || 'undefined'}"`);
+      logger.info(`   ✂️ Normalized Status: "${normalizedStatus || 'undefined'}"`);
+      logger.info(`   ✅ Allowed Statuses: ${allowedStatuses.join(', ')}`);
+      logger.info(`   🎯 Status Matches: ${statusMatches}`);
+      logger.info(`   📋 Issue Type: ${isEpic ? 'Epic' : 'Story'}`);
+      logger.info(`   🎯 Required Status: ${requiresCreationApproval}`);
+      
+      if (!normalizedStatus) {
+        logger.warn(`⚠️ STATUS IS UNDEFINED - Cannot create Jira ticket without status`);
+        logger.warn(`   💡 Please ensure the Notion page has a Status field with a value`);
+        logger.warn(`   💡 The Status field might be missing or empty in Notion`);
+        return;
+      }
+      
+      if (!statusMatches) {
+        logger.info(`⏸️ Skipping Jira ticket creation - status is '${normalizedStatus}', waiting for one of: ${allowedStatuses.join(', ')}`);
+        logger.info(`   💡 Current status: "${normalizedStatus}"`);
+        logger.info(`   💡 Required status for ${isEpic ? 'Epic' : 'Story'}: ${requiresCreationApproval}`);
+        logger.info(`   💡 Tip: Change the status in Notion to "${requiresCreationApproval}" to trigger automatic creation`);
         return;
       }
       
@@ -162,6 +274,7 @@ export class AutomationService {
         // Create Epic based on database type and Epic field from Notion
         logger.info(`🏗️ Creating Epic for: "${pageData.title}" (Database: ${databaseType}, Epic field: Yes)`);
         logger.info(`📅 Epic dates: Start=${pageData.startDate}, End=${pageData.endDate}`);
+        logger.info(`📅 Dev dates: Dev Start=${pageData.devStartDate || pageData.startDate}, Dev End=${pageData.devEndDate || pageData.endDate}`);
         logger.info(`📝 Epic description: "${pageData.description?.substring(0, 200)}..."`);
         logger.info(`🔗 Notion URL: ${notionUrl}`);
         
@@ -171,6 +284,14 @@ export class AutomationService {
           logger.info(`⚠️ No Figma link found in Notion page`);
         }
         
+        // Map Notion "Start date" and "End Date" to Jira "Dev Start Date" and "Dev End Date"
+        // Use devStartDate/devEndDate if available, otherwise fall back to startDate/endDate
+        const devStartDate = pageData.devStartDate || pageData.startDate;
+        const devEndDate = pageData.devEndDate || pageData.endDate;
+        
+        logger.info(`📅 Mapping dates: Notion Start date → Jira Dev Start Date: ${devStartDate}`);
+        logger.info(`📅 Mapping dates: Notion End Date → Jira Dev End Date: ${devEndDate}`);
+        
         jiraIssue = await this.jiraService.createEpic(
           pageData.title,
           pageData.description,
@@ -179,7 +300,12 @@ export class AutomationService {
           notionUrl,
           pageData.startDate,
           pageData.endDate,
-          pageData.figmaLink
+          pageData.figmaLink,
+          devStartDate,  // Map to Dev Start Date in Jira
+          devEndDate,   // Map to Dev End Date in Jira
+          pageData.owner,
+          pageData.roadmap,
+          pageData.vertical
         );
         
         logger.info(`✅ Epic created successfully: ${jiraIssue.key}`);
@@ -188,20 +314,27 @@ export class AutomationService {
         const jiraUrl = this.jiraService.buildJiraUrl(jiraIssue.key);
         await this.notionService.updateJiraEpicLink(pageId, jiraIssue.key, jiraUrl);
         
-        // Add Notion creation comment
-        await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
-        
-        // Comment monitoring disabled - using automatic review workflow
+        // Comments disabled - fully automatic workflow
+        // await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
       } else {
         // Create Story - check for parent Epic from Notion field
         let epicKey: string | null = null;
         
-        // First, try to use the Parent Epic field from Notion
+        // Check multiple fields for epic key (in priority order)
         if (pageData.parentEpic) {
           logger.info(`🔗 Using Parent Epic from Notion field: ${pageData.parentEpic}`);
           epicKey = pageData.parentEpic;
+        } else if (pageData.epicLink) {
+          // Fallback: Try to use Epic Link field
+          logger.info(`🔗 Using Epic Link from Notion field: ${pageData.epicLink}`);
+          epicKey = pageData.epicLink;
+        } else if (pageData.epicKey) {
+          // Also check epicKey field
+          logger.info(`🔗 Using Epic Key from Notion field: ${pageData.epicKey}`);
+          epicKey = pageData.epicKey;
         } else {
-          // Fallback: Try to find a related epic by title similarity
+          // Final fallback: Try to find a related epic by title similarity
+          logger.info(`🔍 No epic link found in Notion fields, searching for related epic...`);
           epicKey = await this.findRelatedEpic(pageData.title);
         }
         
@@ -241,10 +374,8 @@ export class AutomationService {
         const jiraUrl = this.jiraService.buildJiraUrl(jiraIssue.key);
         await this.notionService.updateJiraLink(pageId, jiraIssue.key, jiraUrl);
         
-        // Add Notion creation comment
-        await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
-        
-        // Comment monitoring disabled - using automatic review workflow
+        // Comments disabled - fully automatic workflow
+        // await this.jiraService.addNotionCreationComment(jiraIssue.key, pageData.title);
       }
 
       // Add Jira link back to Notion
@@ -294,24 +425,26 @@ export class AutomationService {
 
       let processedCount = 0;
       
-      // Process User Stories pages
-      for (const page of userStoriesPages) {
-        try {
-          await this.processNotionPageUpdate(page.id);
-          processedCount++;
-        } catch (error) {
-          logger.error(`Error processing User Story page ${page.id}:`, error);
-          // Continue with other pages even if one fails
-        }
-      }
-
-      // Process Epics pages
+      // Process Epics FIRST - they need to exist before User Stories can link to them
+      logger.info('Processing Epics first (User Stories depend on Epics)...');
       for (const page of epicsPages) {
         try {
           await this.processNotionPageUpdate(page.id);
           processedCount++;
         } catch (error) {
           logger.error(`Error processing Epic page ${page.id}:`, error);
+          // Continue with other pages even if one fails
+        }
+      }
+
+      // Process User Stories SECOND - after Epics are created, they can link to parent Epics
+      logger.info('Processing User Stories after Epics...');
+      for (const page of userStoriesPages) {
+        try {
+          await this.processNotionPageUpdate(page.id);
+          processedCount++;
+        } catch (error) {
+          logger.error(`Error processing User Story page ${page.id}:`, error);
           // Continue with other pages even if one fails
         }
       }
@@ -367,9 +500,9 @@ export class AutomationService {
       const cachedData = this.pageStateCache.get(pageId);
       
       if (!cachedData) {
-        // First time processing this page, cache the data
+        // First time processing this page, cache the full data
         this.pageStateCache.set(pageId, {
-          status: currentPageData.status,
+          ...currentPageData,
           lastUpdated: new Date().toISOString()
         });
         return { handled: false };
@@ -413,7 +546,11 @@ export class AutomationService {
         { from: 'Review', to: 'Ready For Dev' },
         { from: 'In Progress', to: 'Ready For Dev' },
         { from: 'Testing', to: 'Ready For Dev' },
-        { from: 'Blocked', to: 'Ready For Dev' }
+        { from: 'Blocked', to: 'Ready For Dev' },
+        { from: 'Done', to: 'Ready For Dev' },
+        
+        // Moving from Done to In Progress - reopen and update
+        { from: 'Done', to: 'In Progress' }
       ];
 
       // Check if this status change should trigger a comment
@@ -423,48 +560,47 @@ export class AutomationService {
 
       if (!shouldComment) {
         logger.info(`ℹ️ Status change ${oldStatus} → ${newStatus} does not require comment`);
-        // Update cache but don't comment
+        // Update cache with full page data but don't comment
         this.pageStateCache.set(pageId, {
-          status: newStatus,
+          ...currentPageData,
           lastUpdated: new Date().toISOString()
         });
         return { handled: false };
       }
 
       // Handle different status change scenarios
+      // Comments disabled - fully automatic workflow
       if (newStatus === 'Review') {
-        // Moving TO Review - notify scrum masters
-        logger.info(`👀 Status changed to "Review" - notifying scrum masters`);
+        // Moving TO Review - comments disabled
+        logger.info(`👀 Status changed to "Review" - comments disabled`);
         
-        const scrumMasterEmails = config.notifications.scrumMasterEmails;
-        await this.jiraService.addReviewNotificationComment(
-          jiraKey,
-          oldStatus!,
-          newStatus!,
-          currentPageData.title || 'Unknown Issue',
-          scrumMasterEmails
-        );
-        
-        logger.info(`✅ Review notification comment added to ${jiraKey}`);
+        // Comments disabled - fully automatic workflow
+        // const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        // await this.jiraService.addReviewNotificationComment(
+        //   jiraKey,
+        //   oldStatus!,
+        //   newStatus!,
+        //   currentPageData.title || 'Unknown Issue',
+        //   scrumMasterEmails
+        // );
         
       } else if (newStatus === 'Approved') {
-        // Moving TO Approved - notify scrum masters
-        logger.info(`✅ Status changed to "Approved" - notifying scrum masters`);
+        // Moving TO Approved - comments disabled
+        logger.info(`✅ Status changed to "Approved" - comments disabled`);
         
-        const scrumMasterEmails = config.notifications.scrumMasterEmails;
-        await this.jiraService.addApprovedNotificationComment(
-          jiraKey,
-          oldStatus!,
-          newStatus!,
-          currentPageData.title || 'Unknown Issue',
-          scrumMasterEmails
-        );
-        
-        logger.info(`✅ Approved notification comment added to ${jiraKey}`);
+        // Comments disabled - fully automatic workflow
+        // const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        // await this.jiraService.addApprovedNotificationComment(
+        //   jiraKey,
+        //   oldStatus!,
+        //   newStatus!,
+        //   currentPageData.title || 'Unknown Issue',
+        //   scrumMasterEmails
+        // );
         
       } else if (newStatus === 'Ready For Dev') {
-        // Moving back TO Ready For Dev - update content and notify
-        logger.info(`🚀 Status changed to "Ready For Dev" - updating content and notifying`);
+        // Moving back TO Ready For Dev - update content only (no comments)
+        logger.info(`🚀 Status changed to "Ready For Dev" - updating content (comments disabled)`);
         
         // First, check if the issue is resolved and reopen it if needed
         const issueStatus = await this.jiraService.getIssueStatus(jiraKey);
@@ -476,22 +612,44 @@ export class AutomationService {
         // Update the Jira issue description with latest content from Notion
         await this.updateJiraIssueContent(jiraKey, currentPageData, pageId);
         
-        // Add notification comment
-        const scrumMasterEmails = config.notifications.scrumMasterEmails;
-        await this.jiraService.addReadyForDevUpdateComment(
-          jiraKey,
-          oldStatus!,
-          newStatus!,
-          currentPageData.title || 'Unknown Issue',
-          scrumMasterEmails
-        );
+        // Comments disabled - fully automatic workflow
+        // const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        // await this.jiraService.addReadyForDevUpdateComment(
+        //   jiraKey,
+        //   oldStatus!,
+        //   newStatus!,
+        //   currentPageData.title || 'Unknown Issue',
+        //   scrumMasterEmails
+        // );
         
-        logger.info(`✅ Ready For Dev update comment added to ${jiraKey}`);
+      } else if (newStatus === 'In Progress' && oldStatus === 'Done') {
+        // Moving from Done to In Progress - reopen and update (no comments)
+        logger.info(`🔄 Status changed from "Done" to "In Progress" - reopening and updating (comments disabled)`);
+        
+        // Check if the issue is resolved and reopen it if needed
+        const issueStatus = await this.jiraService.getIssueStatus(jiraKey);
+        if (issueStatus === 'Done' || issueStatus === 'Resolved') {
+          logger.info(`🔄 Issue ${jiraKey} is resolved, reopening for In Progress status`);
+          await this.jiraService.reopenIssue(jiraKey, currentPageData.title || 'Unknown Issue');
+        }
+        
+        // Update the Jira issue description with latest content from Notion
+        await this.updateJiraIssueContent(jiraKey, currentPageData, pageId);
+        
+        // Comments disabled - fully automatic workflow
+        // const scrumMasterEmails = config.notifications.scrumMasterEmails;
+        // await this.jiraService.addReadyForDevUpdateComment(
+        //   jiraKey,
+        //   oldStatus!,
+        //   newStatus!,
+        //   currentPageData.title || 'Unknown Issue',
+        //   scrumMasterEmails
+        // );
       }
 
-      // Update cache
+      // Update cache with full page data after processing
       this.pageStateCache.set(pageId, {
-        status: newStatus,
+        ...currentPageData,
         lastUpdated: new Date().toISOString()
       });
 
@@ -507,23 +665,258 @@ export class AutomationService {
     try {
       logger.info(`🔄 Updating Jira issue content for ${jiraKey}`);
       
+      // Get cached data to compare changes
+      const cachedData = this.pageStateCache.get(pageId);
+      
       // Get fresh content from Notion
       const notionUrl = `https://www.notion.so/${pageId.replace(/-/g, '')}`;
+      
+      // Log Figma link status for debugging
+      if (pageData.figmaLink) {
+        logger.info(`🎨 Including Figma link in description update: ${pageData.figmaLink}`);
+      } else {
+        logger.debug(`ℹ️ No Figma link to include in description update`);
+      }
+      
       const freshDescription = this.jiraService.createDescriptionADF(pageData.description, notionUrl, true, pageData.figmaLink);
       
-      // Update the Jira issue description
-      const updateData = {
-        fields: {
-          description: freshDescription
-        }
+      // Build update data with all changed fields
+      const updateData: any = {
+        fields: {}
       };
       
-      await this.jiraService.updateIssue(jiraKey, updateData);
-      logger.info(`✅ Jira issue ${jiraKey} content updated with latest Notion data`);
+      const changes: string[] = [];
+      
+      // Add Figma link to custom field if provided
+      if (pageData.figmaLink && pageData.figmaLink.trim()) {
+        const previousFigmaLink = cachedData?.figmaLink;
+        if (!cachedData || previousFigmaLink !== pageData.figmaLink) {
+          updateData.fields[JIRA_CUSTOM_FIELDS.FIGMA_LINK] = pageData.figmaLink.trim();
+          changes.push(`Figma Link: ${previousFigmaLink || 'Not set'} → ${pageData.figmaLink}`);
+          logger.info(`🎨 Adding Figma link to custom field: ${pageData.figmaLink}`);
+        }
+      }
+      
+      // Check for title changes
+      if (!cachedData || cachedData.title !== pageData.title) {
+        if (pageData.title) {
+          updateData.fields.summary = pageData.title;
+          changes.push(`Title: "${cachedData?.title || 'N/A'}" → "${pageData.title}"`);
+        }
+      }
+      
+      // Always update description (content may have changed even if status didn't)
+      updateData.fields.description = freshDescription;
+      if (!cachedData || cachedData.description !== pageData.description) {
+        changes.push('Description: Updated with latest content from Notion');
+      }
+      
+      // Check for story points changes
+      if (!cachedData || cachedData.storyPoints !== pageData.storyPoints) {
+        if (pageData.storyPoints !== undefined) {
+          updateData.fields[JIRA_CUSTOM_FIELDS.STORY_POINTS] = pageData.storyPoints;
+          changes.push(`Story Points: ${cachedData?.storyPoints || 'N/A'} → ${pageData.storyPoints}`);
+        }
+      }
+      
+      // Check for due date changes
+      if (!cachedData || cachedData.dueDate !== pageData.dueDate) {
+        if (pageData.dueDate) {
+          updateData.fields.duedate = pageData.dueDate;
+          changes.push(`Due Date: ${cachedData?.dueDate || 'Not set'} → ${pageData.dueDate}`);
+        } else if (cachedData?.dueDate && !pageData.dueDate) {
+          // Clear due date if it was removed
+          updateData.fields.duedate = null;
+          changes.push(`Due Date: ${cachedData.dueDate} → Removed`);
+        }
+      }
+      
+      // Check for Dev Start Date and Dev End Date changes (for Epics)
+      // Map Notion "Start date" and "End Date" to Jira "Dev Start Date" and "Dev End Date"
+      const devStartDate = pageData.devStartDate || pageData.startDate;
+      const devEndDate = pageData.devEndDate || pageData.endDate;
+      const previousDevStartDate = cachedData?.devStartDate || cachedData?.startDate;
+      const previousDevEndDate = cachedData?.devEndDate || cachedData?.endDate;
+      
+      // Normalize dates to YYYY-MM-DD format (Jira expects this format)
+      const normalizedDevStartDate = devStartDate ? this.normalizeDateForJira(devStartDate) : undefined;
+      const normalizedDevEndDate = devEndDate ? this.normalizeDateForJira(devEndDate) : undefined;
+      
+      // Update Dev Start Date and Dev End Date for Epics
+      // Note: These custom fields must exist in Jira or the update will fail
+      if (!cachedData || previousDevStartDate !== devStartDate) {
+        if (normalizedDevStartDate) {
+          updateData.fields[JIRA_CUSTOM_FIELDS.DEV_START_DATE] = normalizedDevStartDate;
+          changes.push(`Dev Start Date: ${previousDevStartDate || 'Not set'} → ${normalizedDevStartDate}`);
+        }
+      }
+      
+      if (!cachedData || previousDevEndDate !== devEndDate) {
+        if (normalizedDevEndDate) {
+          updateData.fields[JIRA_CUSTOM_FIELDS.DEV_END_DATE] = normalizedDevEndDate;
+          changes.push(`Dev End Date: ${previousDevEndDate || 'Not set'} → ${normalizedDevEndDate}`);
+        }
+      }
+      
+      // Check for epic link changes (parent epic)
+      // Use parentEpic first, then epicLink as fallback
+      const currentEpicKey = pageData.parentEpic || pageData.epicLink || pageData.epicKey;
+      const previousEpicKey = cachedData?.parentEpic || cachedData?.epicLink || cachedData?.epicKey;
+      
+      // Also check current epic link in Jira to ensure it's set correctly
+      // Stories use Epic Link custom field, not parent field
+      let jiraCurrentEpicLink: string | null = null;
+      if (currentEpicKey || !cachedData) {
+        try {
+          const jiraIssue = await this.jiraService.getIssue(jiraKey, [JIRA_CUSTOM_FIELDS.EPIC_LINK]); // Epic Link field
+          // Try to get epic link from custom field
+          if (jiraIssue.fields?.[JIRA_CUSTOM_FIELDS.EPIC_LINK]) {
+            jiraCurrentEpicLink = jiraIssue.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+          }
+          // Also check parent field as fallback (for backwards compatibility)
+          if (!jiraCurrentEpicLink && jiraIssue.fields?.parent?.key) {
+            jiraCurrentEpicLink = jiraIssue.fields.parent.key;
+          }
+        } catch (error) {
+          logger.debug(`Could not get current epic link from Jira for ${jiraKey}`);
+        }
+      }
+      
+      // Update epic link if:
+      // 1. We have an epic key in Notion and it's different from Jira
+      // 2. We have an epic key in Notion but no epic link in Jira (missing link)
+      // 3. The epic key changed in Notion
+      if (currentEpicKey && (jiraCurrentEpicLink !== currentEpicKey || !jiraCurrentEpicLink)) {
+        // Use Epic Link custom field, not parent field
+        updateData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK] = currentEpicKey;
+        changes.push(`Epic Link: ${jiraCurrentEpicLink || previousEpicKey || 'None'} → ${currentEpicKey}`);
+        logger.info(`🔗 Updating epic link for ${jiraKey}: ${jiraCurrentEpicLink || 'None'} → ${currentEpicKey}`);
+      } else if (previousEpicKey && !currentEpicKey && jiraCurrentEpicLink) {
+        // Epic link was removed - we can't clear epic link in Jira, but log it
+        logger.info(`⚠️ Epic link removed in Notion, but Jira epic link cannot be cleared automatically`);
+        changes.push(`Epic Link: ${previousEpicKey} → Removed (manual update required in Jira)`);
+      }
+      
+      // Log detected changes
+      if (changes.length > 0) {
+        logger.info(`📊 Detected changes for ${jiraKey}:`);
+        changes.forEach(change => logger.info(`   • ${change}`));
+      } else {
+        logger.info(`ℹ️ No content changes detected for ${jiraKey}, but updating description to ensure sync`);
+      }
+      
+      // Only update if there are actual changes or if we need to refresh description
+      if (Object.keys(updateData.fields).length > 0) {
+        // If Epic Link is in the update, try to update it separately first
+        // This allows other fields to be updated even if Epic Link fails
+        const epicLinkValue = updateData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+        const hasEpicLink = epicLinkValue !== undefined;
+        
+        if (hasEpicLink) {
+          // Try to update Epic Link separately first using multiple methods
+          let linked = false;
+          let lastError: any = null;
+          
+          // Method 1: Try using Epic Link custom field
+          try {
+            await this.jiraService.updateIssue(jiraKey, {
+              fields: {
+                [JIRA_CUSTOM_FIELDS.EPIC_LINK]: epicLinkValue,
+              },
+            });
+            logger.info(`✅ Epic Link updated for ${jiraKey}: ${epicLinkValue}`);
+            linked = true;
+            // Remove Epic Link from the main update since it's already updated
+            delete updateData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+          } catch (epicLinkError: any) {
+            lastError = epicLinkError;
+            logger.debug(`⚠️ Epic Link field update failed, trying alternative methods: ${epicLinkError.message}`);
+            
+            // Method 2: Try using parent field
+            try {
+              await this.jiraService.updateIssue(jiraKey, {
+                fields: {
+                  parent: {
+                    key: epicLinkValue,
+                  },
+                },
+              });
+              logger.info(`✅ Epic Link updated for ${jiraKey} via parent field: ${epicLinkValue}`);
+              linked = true;
+              // Remove Epic Link from the main update since it's already updated
+              delete updateData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+            } catch (parentError: any) {
+              lastError = parentError;
+              logger.debug(`⚠️ Parent field update also failed: ${parentError.message}`);
+            }
+          }
+          
+          if (!linked) {
+            // If all methods failed, log warning but continue with other updates
+            const errorMessage = lastError?.response?.data?.errors?.[JIRA_CUSTOM_FIELDS.EPIC_LINK] || 
+                                lastError?.response?.data?.errors?.customfield_10011 ||
+                                lastError?.message || 'All linking methods failed';
+            logger.warn(`⚠️ Could not update Epic Link for ${jiraKey}: ${errorMessage}`);
+            logger.warn(`   💡 The Epic Link field may not be available for updates on this Jira instance`);
+            logger.warn(`   💡 You may need to manually link the story to the epic in Jira`);
+            // Remove Epic Link from the main update to avoid failing the whole update
+            delete updateData.fields[JIRA_CUSTOM_FIELDS.EPIC_LINK];
+          }
+        }
+        
+        // Update remaining fields (if any)
+        if (Object.keys(updateData.fields).length > 0) {
+          await this.jiraService.updateIssue(jiraKey, updateData);
+          logger.info(`✅ Jira issue ${jiraKey} updated with latest Notion data`);
+          logger.info(`   Updated fields: ${Object.keys(updateData.fields).join(', ')}`);
+        } else if (hasEpicLink) {
+          // Only Epic Link was in the update, and it was already handled
+          logger.info(`✅ Jira issue ${jiraKey} update complete`);
+        }
+      } else {
+        logger.info(`ℹ️ No updates needed for ${jiraKey} - all fields are in sync`);
+      }
       
     } catch (error) {
       logger.error(`❌ Failed to update Jira issue content for ${jiraKey}:`, error);
+      throw error;
     }
+  }
+
+  /**
+   * Normalize date format to YYYY-MM-DD for Jira
+   * Handles various date formats from Notion
+   */
+  private normalizeDateForJira(dateString: string | undefined): string | undefined {
+    if (!dateString) return undefined;
+    
+    // If already in YYYY-MM-DD format, return as is
+    if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+      return dateString;
+    }
+    
+    // Handle MM/DD/YYYY format (common in US, like "10/27/2025")
+    const mmddyyyy = dateString.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (mmddyyyy) {
+      const [, month, day, year] = mmddyyyy;
+      return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+    }
+    
+    // Try to parse as ISO date string
+    try {
+      const date = new Date(dateString);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      }
+    } catch (error) {
+      logger.warn(`⚠️ Could not parse date: ${dateString}`);
+    }
+    
+    // Return as-is if we can't parse it (might already be in correct format)
+    return dateString;
   }
 
   private async findRelatedEpic(storyTitle: string): Promise<string | null> {
@@ -602,6 +995,145 @@ export class AutomationService {
     }
 
     return changes;
+  }
+
+  /**
+   * Create user stories from an epic automatically
+   * This method creates user stories in Jira linked to a parent epic
+   */
+  async createUserStoriesFromEpic(
+    epicKey: string,
+    userStories: Array<{
+      title: string;
+      description?: string;
+      storyPoints?: number;
+      priority?: string;
+      dueDate?: string;
+      figmaLink?: string;
+      status?: string;
+    }>
+  ): Promise<{ created: number; stories: string[]; errors: string[] }> {
+    try {
+      logger.info(`🏗️ Creating user stories from Epic ${epicKey}`);
+      logger.info(`📋 Number of user stories to create: ${userStories.length}`);
+
+      const results = {
+        created: 0,
+        stories: [] as string[],
+        errors: [] as string[]
+      };
+
+      // Verify epic exists
+      try {
+        const epic = await this.jiraService.getIssue(epicKey);
+        logger.info(`✅ Epic ${epicKey} found: "${epic.fields.summary}"`);
+      } catch (error) {
+        logger.error(`❌ Epic ${epicKey} not found`);
+        results.errors.push(`Epic ${epicKey} not found`);
+        return results;
+      }
+
+      // Create each user story
+      for (const story of userStories) {
+        try {
+          logger.info(`📝 Creating user story: "${story.title}"`);
+
+          // Check for duplicates first
+          const duplicateIssue = await this.jiraService.findDuplicateIssue(story.title, 'Story');
+          if (duplicateIssue) {
+            logger.warn(`⚠️ Duplicate story found: ${duplicateIssue.key} - "${story.title}"`);
+            results.errors.push(`Duplicate story: ${duplicateIssue.key} - "${story.title}"`);
+            continue;
+          }
+
+          // Create the story in Jira
+          // Note: Epic Link field uses epic key (e.g., HAR-1118), not epic name
+          const jiraIssue = await this.jiraService.createStory(
+            story.title,
+            story.description,
+            epicKey, // Use epic key for Epic Link field
+            story.storyPoints,
+            story.dueDate,
+            story.priority,
+            undefined, // notionUrl - not available for auto-created stories
+            undefined, // redDate
+            undefined, // greenDate
+            undefined, // blueDate
+            story.figmaLink
+          );
+
+          logger.info(`✅ User story created: ${jiraIssue.key} - "${story.title}"`);
+          results.created++;
+          results.stories.push(jiraIssue.key);
+
+          // Comments disabled - fully automatic workflow
+          // await this.jiraService.addNotionCreationComment(jiraIssue.key, story.title);
+
+        } catch (error: any) {
+          logger.error(`❌ Error creating user story "${story.title}":`, error);
+          results.errors.push(`Failed to create "${story.title}": ${error.message || 'Unknown error'}`);
+        }
+      }
+
+      logger.info(`🎉 User story creation complete: ${results.created}/${userStories.length} created`);
+      return results;
+
+    } catch (error) {
+      logger.error(`Error creating user stories from epic ${epicKey}:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create user stories from an epic by epic title
+   * Searches for the epic by title and creates user stories
+   */
+  async createUserStoriesFromEpicByTitle(
+    epicTitle: string,
+    userStories: Array<{
+      title: string;
+      description?: string;
+      storyPoints?: number;
+      priority?: string;
+      dueDate?: string;
+      figmaLink?: string;
+      status?: string;
+    }>
+  ): Promise<{ epicKey?: string; created: number; stories: string[]; errors: string[] }> {
+    try {
+      logger.info(`🔍 Searching for Epic by title: "${epicTitle}"`);
+
+      // Search for epic by title using JQL
+      const jql = `project = "${config.jira.projectKey}" AND issuetype = "Epic" AND summary ~ "${epicTitle}" ORDER BY created DESC`;
+      const epics = await this.jiraService.searchIssues(jql);
+
+      if (epics.length === 0) {
+        logger.error(`❌ Epic not found with title: "${epicTitle}"`);
+        return {
+          created: 0,
+          stories: [],
+          errors: [`Epic not found: "${epicTitle}"`]
+        };
+      }
+
+      // Find exact match or use first result
+      const epic = epics.find(e => 
+        e.fields.summary.toLowerCase() === epicTitle.toLowerCase()
+      ) || epics[0];
+
+      logger.info(`✅ Found Epic: ${epic.key} - "${epic.fields.summary}"`);
+
+      // Create user stories
+      const results = await this.createUserStoriesFromEpic(epic.key, userStories);
+      return {
+        epicKey: epic.key,
+        ...results
+      };
+
+    } catch (error) {
+      logger.error(`Error creating user stories from epic by title "${epicTitle}":`, error);
+      throw error;
+    }
   }
 
 }
