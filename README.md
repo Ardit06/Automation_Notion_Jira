@@ -280,8 +280,8 @@ ENABLE_STATUS_CHANGE_COMMENTS=true
 # ============================================
 # SECURITY (Optional)
 # ============================================
-# Comma-separated list of authorized user emails for manual sync
-# AUTHORIZED_USERS=user1@domain.com,user2@domain.com
+# Optional: comma-separated Notion user IDs (empty = no filter)
+# AUTHORIZED_USERS=uuid1,uuid2
 ```
 
 #### 4.3 Verify .env File
@@ -442,7 +442,8 @@ Automation_Jira_Notion/
 | `JIRA_STORY_POINTS_FIELD_ID` | Custom field ID for story points | `customfield_10016` |
 | `JIRA_FIGMA_LINK_FIELD_ID` | Custom field ID for Figma links | `customfield_10021` |
 | `JIRA_EPIC_TYPE_FIELD_ID` | Custom field ID for epic type | `customfield_12224` |
-| `AUTHORIZED_USERS` | Comma-separated authorized emails | - |
+| `AUTHORIZED_USERS` | Comma-separated Notion user IDs (optional filter) | - |
+| `ALLOW_UNSIGNED_WEBHOOKS` | Dev only: skip webhook signature verification | off |
 
 ### Field Mapping
 
